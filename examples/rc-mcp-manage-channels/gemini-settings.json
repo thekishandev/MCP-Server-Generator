@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "rc-mcp-manage-channels": {
+      "command": "node",
+      "args": [
+        "/home/kishan/MCP-Server-Generator/rc-mcp-manage-channels/dist/server.js"
+      ],
+      "env": {
+        "RC_URL": "http://localhost:3000",
+        "RC_USER": "${RC_USER}",
+        "RC_PASSWORD": "${RC_PASSWORD}"
+      }
+    }
+  }
+}

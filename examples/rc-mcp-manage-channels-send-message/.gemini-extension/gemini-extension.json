@@ -1,0 +1,18 @@
+{
+  "name": "rc-mcp-manage-channels-send-message",
+  "version": "1.0.0",
+  "description": "Minimal MCP server for Rocket.Chat: manage-channels, send-message",
+  "mcpServers": {
+    "rc-mcp-manage-channels-send-message": {
+      "command": "node",
+      "args": [
+        "./dist/server.js"
+      ],
+      "env": {
+        "RC_URL": "${RC_URL}",
+        "RC_USER": "${RC_USER}",
+        "RC_PASSWORD": "${RC_PASSWORD}"
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.tgz
+.DS_Store
+src/providers/rocketchat/openapi/
+
+# Generated MCP Servers & Test outputs
+test-server/
+my-rc-agent/
+*.cast
