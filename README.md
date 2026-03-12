@@ -50,9 +50,6 @@ We flip the model. **MCP servers should be minimal by construction.** Rather tha
 
 ## 🏛️ Dual-Layer Architecture
 
-<div align="center">
-  <img src="./Archtecute.svg" alt="Project Architecture" width="100%">
-</div>
 
 ```mermaid
 flowchart TB
