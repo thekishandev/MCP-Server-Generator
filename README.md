@@ -230,13 +230,6 @@ Please refer to the [DEMO_GUIDE.md](./DEMO_GUIDE.md) in the project root to walk
 
 ---
 
-## 📖 Complete Documentation & Examples
-
-- **[Project Overview Deep Dive](./Project_Overview.md):** Complete GSoC project context, constraints, and success criteria.
-- **[Architecture Breakdown](./Architecture.md):** Detailed technical breakdown of the pipeline's file structure and extraction mechanisms.
-
----
-
 ## 🛠️ Technical Stack & Dependencies
 
 - **Language:** TypeScript (Strict Mode execution)
