@@ -1,0 +1,1 @@
+prompt = """\nThe user wants to generate a minimal MCP server for Rocket.Chat.\nTheir specific request is: {{args}}\n\nFirst, use rc_suggest_endpoints to find the right API endpoints.\nThen use rc_generate_server to create the server.\nFinally, use rc_analyze_minimality to show the context reduction.\n"""

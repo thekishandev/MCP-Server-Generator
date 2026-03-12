@@ -50,11 +50,11 @@ The generator provides a full suite of tools for managing the MCP lifecycle:
 
 ---
 
-## 4. Core Differentiators — ✅ Implemented (Phase 2)
+## 4. Integrating Gemini
 
 The project undeniably surpasses standard MVCs across three core differentiators:
 
-### A. Closing the "AI Discovery" Gap (`rc-mcp suggest`)
+### A. LLM suggestions (`rc-mcp suggest`)
 `rc-mcp suggest "<intent>"` lets developers describe what they want in plain English instead of knowing exact capability names. **Crucially, the LLM is only used once at discovery — generation remains 100% deterministic.**
 
 **Key features:**
@@ -63,7 +63,7 @@ The project undeniably surpasses standard MVCs across three core differentiators
 - **Weighted offline scoring:** Keyword overlaps with the API capability name count 2x, ensuring perfectly exact hits rank highest.
 - **Hallucination guard:** Even if the LLM suggests an invented parameter, the pipeline ignores it if it doesn't match the capability registry.
 
-### B. Proving "Surgical" Recursive Extraction
+### B. Offline 
 While it's easy to prune simple endpoints, real-world schemas use deep `$ref` references. This generator surgically follows `$ref` trees (up to depth 10) to extract *only* the dependencies required the requested endpoints.
 
 To prove this isn't just a claim, `rc-mcp analyze` provides a quantifiable **$ref Resolution Depth report**:
@@ -76,7 +76,7 @@ To prove this isn't just a claim, `rc-mcp analyze` provides a quantifiable **$re
 ```
 *(From `rc-mcp analyze send-message`)*
 
-### C. Redefining the "Definition of Done"
+### C. Validate
 A generated server isn't done unless it's strictly validated. The project now holds generated output to professional engineering standards.
 
 - **Deep `rc-mcp validate --deep`:** Upgraded from 9 simple structural checks to 20 precise validations. It verifies `zod` schema imports strictly for each tool, asserts MCP Protocol connections inside `server.ts` are exact, checks test file coverage per tool, and runs `tsc --noEmit` inside the generated directory to guarantee 0 TypeScript errors.

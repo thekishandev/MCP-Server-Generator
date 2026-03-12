@@ -9,3 +9,12 @@ src/providers/rocketchat/openapi/
 test-server/
 my-rc-agent/
 *.cast
+.cache/
+gemini-settings.json
+
+# Context Files
+Project_Context.md
+GSoC_Project_Documentation.md
+mcp_project_context_and_system_prompt.md
+Project_Overview.md
+Architecture.md
