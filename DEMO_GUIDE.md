@@ -1,6 +1,6 @@
 # 🚀 Rocket.Chat Minimal MCP Server Generator: The Ultimate Demo Guide
 
-This guide provides a comprehensive, start-to-finish script for demonstrating the power of your `rc-mcp` MVP using the `gemini-cli`. It's designed to highlight every core capability: AI Discovery, Progressive Disclosure, Deterministic Generation, your rigorous Definition of Done, and the new Context Management best practices.
+This guide provides a comprehensive, start-to-finish script for demonstrating the power of `rc-mcp` MVP using the `gemini-cli`. It's designed to highlight every core capability: AI Discovery, Progressive Disclosure, Deterministic Generation, your rigorous Definition of Done, and the new Context Management best practices.
 
 ---
 
@@ -65,7 +65,22 @@ _Now, follow up to expand:_
 
 ---
 
-## 🏭 Phase 4: The "Deterministic Generation" Test
+## 🔍 Phase 4: The "Precision Gap Filling" Test (rc_search)
+
+Sometimes the human intent is very specific, or a corner case is missed. This shows how the agent can use full-text search to find exact endpoints.
+
+**Enter this prompt in `gemini`:**
+
+> _"I also need to make sure I can remove a custom emoji by its ID. Search the content-management domain for any 'delete' operations to find the exact endpoint."_
+
+**Expected Behavior:**
+
+1.  Gemini uses `rc_search_endpoints` with `{"query": "delete", "domains": ["content-management"]}`.
+2.  **The Magic:** It precisely finds `post-api-v1-emoji-custom.delete`, demonstrating that it doesn't always have to rely on broad suggestions.
+
+---
+
+## 🏭 Phase 5: The "Deterministic Generation" Test
 
 Now, let's combine the results and actually generate the minimal server.
 
@@ -81,7 +96,7 @@ Now, let's combine the results and actually generate the minimal server.
 
 ---
 
-## 📐 Phase 5: The "Definition of Done" Test (Validation & Minimality)
+## 📐 Phase 6: The "Definition of Done" Test (Validation & Minimality)
 
 This is the climax of the demo, proving the value proposition of the entire project.
 
@@ -98,7 +113,7 @@ This is the climax of the demo, proving the value proposition of the entire proj
 
 ---
 
-## 🧹 Phase 6: The "Context Cleansing" Test
+## 🧹 Phase 7: The "Context Cleansing" Test
 
 This tests the new Claude Code best practices we just implemented.
 
@@ -116,9 +131,10 @@ This tests the new Claude Code best practices we just implemented.
 
 If you follow this script, you will have successfully demonstrated:
 
-1.  **AI mapping vague human intent to deterministic API endpoints.**
-2.  **Browsing a massive API natively without hitting token limits.**
-3.  **Zero-LLM, strictly deterministic code scaffolding.**
-4.  **Auto-injection of required dependencies (login).**
-5.  **Rigorous, provable context reduction (minimality analysis).**
-6.  **Enterprise-grade QA (deep type checking, zod validation, test coverage).**
+1.  **AI mapping vague human intent to deterministic API clusters via the V4 engine.**
+2.  **Precision gap-filling using full-text search across 558 endpoints.**
+3.  **Browsing a massive API natively without hitting token limits via progressive disclosure.**
+4.  **Zero-LLM, strictly deterministic code scaffolding.**
+5.  **Auto-injection of required dependencies (login).**
+6.  **Rigorous, provable context reduction (minimality analysis).**
+7.  **Enterprise-grade QA (deep type checking, zod validation, test coverage).**

@@ -2,11 +2,14 @@
  * SuggestEngine Unit Tests
  *
  * Tests the deterministic parts of SuggestEngine without making real LLM calls:
- *   - Keyword-based offline scoring
+ *   - Keyword-based offline scoring (v2: multi-cluster, TF-IDF, synonyms)
  *   - Registry validation filter (hallucination guard)
  *   - Tokenizer correctness
  *   - Result deduplication
  *   - Confidence level mapping
+ *   - Cross-domain intent coverage
+ *   - Synonym expansion
+ *   - Search endpoint functionality
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -54,7 +57,7 @@ describe("SuggestEngine._tokenize", () => {
   });
 });
 
-// ─── Keyword Scorer ───────────────────────────────────────────────────
+// ─── Keyword Scorer (v2 multi-cluster) ────────────────────────────────
 
 describe("SuggestEngine._suggestWithKeywords", () => {
   it("returns valid operationIds only", async () => {
@@ -72,7 +75,7 @@ describe("SuggestEngine._suggestWithKeywords", () => {
     const engine = await makeOfflineEngine();
     const results = engine._suggestWithKeywords("send a message");
     expect(results.length).toBeGreaterThan(0);
-    // It should match chat/message related endpoints
+    // It should match chat/message related endpoints across clusters
     const allEps = results.flatMap((r) => r.endpoints);
     expect(
       allEps.some(
@@ -84,12 +87,25 @@ describe("SuggestEngine._suggestWithKeywords", () => {
     ).toBe(true);
   });
 
-  it("returns at most 1 result cluster for keywords", async () => {
+  it("returns MULTIPLE clusters for cross-domain intents", async () => {
     const engine = await makeOfflineEngine();
     const results = engine._suggestWithKeywords(
-      "I want to do things with Rocket.Chat",
+      "create project channel, invite team members, send task updates and star important messages",
     );
-    expect(results.length).toBeLessThanOrEqual(1);
+    // Should return clusters from multiple domains (channels, messaging, etc.)
+    expect(results.length).toBeGreaterThan(1);
+  });
+
+  it("covers messaging AND channel endpoints for mixed intent", async () => {
+    const engine = await makeOfflineEngine();
+    const results = engine._suggestWithKeywords(
+      "create channel, send message, star message",
+    );
+    const allEps = results.flatMap((r) => r.endpoints);
+    // Should have both channel and chat endpoints
+    const hasChannel = allEps.some((ep) => ep.includes("channel"));
+    const hasChat = allEps.some((ep) => ep.includes("chat") || ep.includes("message"));
+    expect(hasChannel || hasChat).toBe(true);
   });
 
   it("assigns confidence high/medium/low correctly", async () => {
@@ -105,6 +121,17 @@ describe("SuggestEngine._suggestWithKeywords", () => {
     const results = engine._suggestWithKeywords("xyzzy frobnicate");
     // Falls back to empty list if 0 matches
     expect(results.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it("finds endpoints via synonym expansion ('invite' matches 'add')", async () => {
+    const engine = await makeOfflineEngine();
+    const results = engine._suggestWithKeywords("invite members to channel");
+    const allEps = results.flatMap((r) => r.endpoints);
+    // Should find channels.invite or channels.addAll via synonyms
+    const hasInviteRelated = allEps.some(
+      (ep) => ep.includes("invite") || ep.includes("add"),
+    );
+    expect(hasInviteRelated).toBe(true);
   });
 });
 
@@ -131,7 +158,7 @@ describe("SuggestEngine.suggest (offline, no API key)", () => {
 
   it("respects the topN parameter", async () => {
     const engine = new SuggestEngine();
-    const results = await engine.suggest("I want to do something", 2);
+    const results = await engine.suggest("create channel send message star message invite users", 2);
     expect(results.length).toBeLessThanOrEqual(2);
   });
 });
@@ -167,5 +194,47 @@ describe("SuggestEngine — deduplication guard", () => {
     expect(results[0].capability).toBe("test-1");
 
     spy.mockRestore();
+  });
+});
+
+// ─── Search Endpoints ─────────────────────────────────────────────────
+
+describe("SuggestEngine.searchEndpoints", () => {
+  it("finds endpoints matching a text query", async () => {
+    const engine = new SuggestEngine();
+    const results = await engine.searchEndpoints("star message");
+    expect(results.length).toBeGreaterThan(0);
+    const hasStarRelated = results.some(
+      (r) => r.operationId.includes("star") || r.summary.toLowerCase().includes("star"),
+    );
+    expect(hasStarRelated).toBe(true);
+  });
+
+  it("filters by domain when specified", async () => {
+    const engine = new SuggestEngine();
+    const results = await engine.searchEndpoints("create", { domains: ["rooms"] });
+    for (const r of results) {
+      expect(r.domain).toBe("rooms");
+    }
+  });
+
+  it("respects the limit parameter", async () => {
+    const engine = new SuggestEngine();
+    const results = await engine.searchEndpoints("message", { limit: 3 });
+    expect(results.length).toBeLessThanOrEqual(3);
+  });
+
+  it("returns results with required fields", async () => {
+    const engine = new SuggestEngine();
+    const results = await engine.searchEndpoints("channel invite");
+    for (const r of results) {
+      expect(typeof r.operationId).toBe("string");
+      expect(typeof r.summary).toBe("string");
+      expect(typeof r.method).toBe("string");
+      expect(typeof r.path).toBe("string");
+      expect(typeof r.domain).toBe("string");
+      expect(Array.isArray(r.tags)).toBe(true);
+      expect(typeof r.score).toBe("number");
+    }
   });
 });

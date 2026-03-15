@@ -62,8 +62,9 @@ flowchart TB
     end
 
     subgraph DISCOVERY["Layer 1: AI Discovery Tools"]
-        S["rc_suggest_endpoints\nMaps vague intent to API domains"]
-        D["rc_discover_endpoints\nProgressive disclosure of 558 endpoints"]
+        S["rc_suggest_endpoints\nMulti-cluster semantic mapping"]
+        F["rc_search_endpoints\nPrecision text search to fill gaps"]
+        D["rc_discover_endpoints\nDomain browsing (progressive disclosure)"]
     end
 
     subgraph PIPELINE["Layer 2: Deterministic Pipeline Tools"]
@@ -98,10 +99,11 @@ The system is strictly divided to ensure safety, predictability, and usability. 
 
 ### Layer 1: AI Discovery (The Context Savers)
 
-Developers don't need to know exact operationIds. They describe their intent in plain English to the Gemini CLI agent:
+Developers don't need to know exact `operationIds`. They describe their intent in plain English to the Gemini CLI agent, which uses 3 distinct lookup tools:
 
-- **`rc_suggest`:** Uses the LLM to map semantic concepts ("kicking users") to specific API domains without forcing the agent to read 10,000 lines of OpenAPI YAML.
-- **`rc_discover`:** Implements progressive disclosure. The agent first asks for high-level tag summaries, and only expands the specific tags it finds relevant, entirely preventing context bloat.
+- **`rc_suggest` (Primary):** The starting point. It maps a single natural language intent to **multiple** highly relevant API clusters across different domains simultaneously. Powered by our V4 engine's semantic mapping and strict domain guarantees.
+- **`rc_search` (Gap Filler):** If the initial suggestion missed a specific corner case, the agent searches the entire 558-endpoint index via keywords to pinpoint exact operations.
+- **`rc_discover` (Open Exploration):** If the user is just browsing, this tool implements progressive disclosure. The agent reads high-level tag summaries, and only expands the tags it finds relevant, preventing monolithic context bloat.
 
 ### Layer 2: Deterministic Generation & QA
 
@@ -111,6 +113,17 @@ Once the agent knows exactly which `operationIds` it needs, it hands off to the 
 2. **`ToolGenerator`**: Transforms OpenAPI JSON shapes into TypeScript Zod schema definitions and executable MCP tool handler functions. Compresses tool descriptions to ≤120 characters to prevent verbose API descriptions from hijacking the context window.
 3. **`ServerScaffolder`**: Assembles a complete, runnable Node.js project. **It automatically injects the basic authentication (`login`) endpoint if any requested tools require auth**, scaffolding `server.ts`, tools, configurations, and intelligent dynamic `vitest` stubs.
 4. **`Validator` & `Analyzer`**: The agent proves its work. It runs the structural validations and generates a mathematical footprint report, guaranteeing the user gets a working, minimal output.
+
+---
+
+## 🧠 V4 AI Suggest Engine Improvements
+
+The `rc_suggest_endpoints` tool is powered by a custom-built, heavily optimized semantic search engine explicitly designed to bridge natural language intent to API vocabulary. In **v4**, we implemented several advanced algorithms to achieve pristine endpoint clustering without noise:
+
+- **Semantic Synonym Mapping:** Users say `"monitor"`, `"transfer"`, or `"assign"`. The engine bridges these terms to `"statistics"`, `"forward"`, and `"role"` to reliably hit exact API domains, even when vernacular doesn't perfectly match Rocket.Chat's internal identifiers.
+- **Dynamic Domain Coverage Guarantee:** When the user explicitly asks for a distinct feature (e.g., `"statistics"`), the engine guarantees representation of that capability mathematically, preventing dominant clusters (like `"chat"`) from starving smaller, but requested, functional areas.
+- **Strict Field-Weighted Set-Cover Algorithm:** Bloated endpoint `descriptions` cannot steal coverage away from precise `operationId` matches. The engine implements greedy set-cover picking using a strict `fieldWeight >= 2` rule (meaning only actual tags, IDs, summaries, and paths count towards intent coverage).
+- **Per-Cluster Noise Filtering:** Endpoints that only weakly match the user's intent are dynamically discarded if they score `< 50%` compared to the strongest endpoint in their cluster, entirely eliminating "tag-alongs" (e.g., preventing `rooms.delete` from contaminating a request for creating discussions).
 
 ---
 
@@ -180,11 +193,12 @@ The Gemini agent will autonomously call the discovery tools, recommend the exact
 
 ## 🛠️ MCP Tools Reference (For the LLM Agent)
 
-When linked to an LLM, the generator exposes these 5 native MCP tools:
+When linked to an LLM, the generator exposes these 6 native MCP tools:
 
 | Tool Name               | Purpose for the Agent                                                  |
 | :---------------------- | :--------------------------------------------------------------------- |
-| `rc_suggest_endpoints`  | Maps the human's vague intent to specific OpenAPI `operationIds`.      |
+| `rc_suggest_endpoints`  | Maps the human's vague intent to multiple API clusters via V4 Engine.  |
+| `rc_search_endpoints`   | Full-text index search to pinpoint exact operations or fill gaps.      |
 | `rc_discover_endpoints` | Browses the 558-endpoint API via progressive disclosure (tags first).  |
 | `rc_generate_server`    | Scaffolds the complete Node.js server project to disk.                 |
 | `rc_analyze_minimality` | Provides mathematical proof of token/schema reduction vs the full API. |

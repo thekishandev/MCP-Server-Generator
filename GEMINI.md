@@ -6,6 +6,22 @@ Your generated servers contain only what's needed (2-12 endpoints).
 
 ## Available MCP Tools
 
+### rc_suggest_endpoints ⭐ START HERE
+
+Map a natural language user intent to specific API endpoint clusters. Returns **multiple clusters** grouped by functional area (e.g., channel-management, messaging, user-discovery) with cross-domain coverage. Uses synonym expansion and TF-IDF scoring.
+
+**Input:** `{ intent: string }`
+
+**Output:** Multiple clusters covering ALL parts of the intent, plus a combined endpoint list.
+
+> **This is your primary discovery tool.** For most intents, it finds all needed endpoints in a single call.
+
+### rc_search_endpoints
+
+Search across ALL 558 Rocket.Chat API endpoints by text query. Matches against operationId, summary, description, path, and tags with synonym expansion. Use this to fill gaps or find specific endpoints.
+
+**Input:** `{ query: string, domains?: string[], limit?: number }`
+
 ### rc_discover_endpoints
 
 Browse Rocket.Chat API endpoints by domain. Returns tag summaries by default.
@@ -18,12 +34,6 @@ Use `expand` to reveal individual endpoints for specific tags.
 
 **Default output:** Tag summaries grouped by domain
 **Expanded output:** Individual endpoints for expanded tags only
-
-### rc_suggest_endpoints
-
-Map a natural language user intent to a specific list of endpoint paths. Use this when the user vaguely describes their goal and you need help mapping it to OpenAPI paths.
-
-**Input:** `{ intent: string }`
 
 ### rc_generate_server
 
@@ -71,16 +81,16 @@ Validate generated server: structure, MCP compliance, Zod schemas, test coverage
 
 ## Workflow
 
-1. **Understand intent** — Map user keywords to domains using guide above
-2. **Browse tags** — Call `rc_discover_endpoints` with relevant domains, NO expand
-3. **Expand relevant tags** — Call again with `expand` for most relevant tags
-   - Never re-expand previously viewed tags
-4. **Recommend endpoints** — Pick minimal set, explain why each is needed
-5. **Confirm** — Let user adjust. Do NOT ask about output directory yet
-6. **Choose location** — Ask where to save
-7. **Generate** — Call `rc_generate_server`
-8. **Validate & Analyze** — Call `rc_validate_server` with `deep: true` + `rc_analyze_minimality`
-   Show the minimality report and validation results. Always use deep validation.
+1. **Understand intent** — Call `rc_suggest_endpoints` with the FULL user intent. This now returns multi-cluster results covering channels, messaging, users, etc.
+2. **Review clusters** — Check if the clusters cover ALL parts of the user's intent.
+3. **Fill gaps** — If anything is missing, call `rc_search_endpoints` with specific terms (NOT `rc_discover_endpoints`).
+4. **Recommend endpoints** — Combine the clusters into a minimal set, explain why each is needed.
+5. **Confirm** — Let user adjust. Do NOT ask about output directory yet.
+6. **Choose location** — Ask where to save.
+7. **Generate** — Call `rc_generate_server`.
+8. **Validate & Analyze** — Call `rc_validate_server` with `deep: true` + `rc_analyze_minimality`. Show the minimality report and validation results. Always use deep validation.
+
+> **Key change:** `rc_suggest_endpoints` now returns cross-domain results in one call. You should rarely need `rc_discover_endpoints` anymore — use it only for open-ended exploration when the user is browsing, not searching.
 
 ## Rules
 
@@ -90,3 +100,4 @@ Validate generated server: structure, MCP compliance, Zod schemas, test coverage
 - Do NOT re-expand previously viewed tags
 - Always run validate + analyze after generation (this is our Definition of Done)
 - Always pass `deep: true` to `rc_validate_server` to verify TypeScript compilation
+- Prefer `rc_suggest_endpoints` → `rc_search_endpoints` → `rc_discover_endpoints` (in that order)

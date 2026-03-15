@@ -92,36 +92,42 @@ server.tool(
   },
 );
 
-// Tool 2: Suggest endpoints based on intent
+// Tool 2: Suggest endpoints based on intent (v2: multi-cluster, cross-domain)
 server.tool(
   "rc_suggest_endpoints",
-  "Given a natural language description of what you want to do with Rocket.Chat, returns the specific API endpoints needed.",
+  "Map a natural language description of what you want to do with Rocket.Chat to specific API endpoint clusters. Returns MULTIPLE clusters grouped by functional area (e.g., channel-management, messaging, user-discovery) to cover ALL parts of the intent. Uses synonym expansion and TF-IDF scoring for accurate cross-domain matching.",
   {
     intent: z
       .string()
       .describe(
-        'What the user wants to do, e.g., "send messages and get room statistics"',
+        'What the user wants to do, e.g., "create project channel, invite members, send task updates and star important messages"',
       ),
   },
   async ({ intent }) => {
     try {
       const { SuggestEngine } = await import("../core/suggest-engine.js");
       const engine = new SuggestEngine();
-      const suggestions = await engine.suggest(intent, 3);
+      const suggestions = await engine.suggest(intent, 5);
 
       if (suggestions.length === 0) {
         return {
-          content: [{ type: "text", text: "No suggestions found." }],
+          content: [{ type: "text", text: "No matching endpoints found for this intent. Try rc_search_endpoints for a broader text search, or rc_discover_endpoints to browse by domain." }],
         };
       }
 
       let result = `Suggestions for intent: "${intent}"\n\n`;
+      const allEndpoints: string[] = [];
+
       for (let i = 0; i < suggestions.length; i++) {
         const s = suggestions[i]!;
-        result += `${i + 1}. Capability: ${s.capability} (Confidence: ${s.confidence})\n`;
+        result += `${i + 1}. ${s.capability} (Confidence: ${s.confidence})\n`;
         result += `   Reason: ${s.reason}\n`;
         result += `   Endpoints: ${s.endpoints.join(", ")}\n\n`;
+        allEndpoints.push(...s.endpoints);
       }
+
+      result += `\n── Combined Endpoint List (${allEndpoints.length} total) ──\n`;
+      result += allEndpoints.map((ep, i) => `  ${i + 1}. ${ep}`).join("\n");
 
       return {
         content: [{ type: "text", text: result.trimEnd() }],
@@ -132,6 +138,60 @@ server.tool(
           {
             type: "text",
             text: `Error suggesting endpoints: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+// Tool 2b: Search endpoints by text query
+server.tool(
+  "rc_search_endpoints",
+  "Search across ALL Rocket.Chat API endpoints by text query. Matches against operationId, summary, description, path, and tags with synonym expansion. Use this to find specific endpoints when you know what you're looking for, or to fill gaps after rc_suggest_endpoints.",
+  {
+    query: z
+      .string()
+      .describe(
+        'Search terms, e.g., "star message" or "invite user channel"',
+      ),
+    domains: z
+      .array(z.enum(VALID_DOMAINS))
+      .optional()
+      .describe("Limit search to specific domains"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Max results (default 20)"),
+  },
+  async ({ query, domains, limit }) => {
+    try {
+      const { SuggestEngine } = await import("../core/suggest-engine.js");
+      const engine = new SuggestEngine();
+      const results = await engine.searchEndpoints(query, { domains, limit });
+
+      if (results.length === 0) {
+        return {
+          content: [{ type: "text", text: `No endpoints found matching "${query}". Try broader terms or rc_discover_endpoints to browse.` }],
+        };
+      }
+
+      let output = `Search results for "${query}" (${results.length} matches):\n\n`;
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]!;
+        output += `  ${i + 1}. ${r.operationId.padEnd(45)} ${r.method} — ${r.summary} [${r.domain}]\n`;
+      }
+
+      return {
+        content: [{ type: "text", text: output.trimEnd() }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error searching endpoints: ${error instanceof Error ? error.message : String(error)}`,
           },
         ],
         isError: true,
