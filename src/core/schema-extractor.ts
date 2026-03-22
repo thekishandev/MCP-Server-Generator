@@ -34,18 +34,31 @@ import type {
   Domain,
 } from "./types.js";
 import { VALID_DOMAINS } from "./types.js";
+import type { ProviderConfig } from "./provider-config.js";
+import { RocketChatProvider } from "./provider-config.js";
 
 export class SchemaExtractor {
   /** Index of all discovered endpoints keyed by API path */
   private endpointIndex: Map<string, EndpointSchema> = new Map();
   /** Raw parsed OpenAPI documents for $ref resolution */
   private documents: Map<string, Record<string, unknown>> = new Map();
+  /** Provider configuration (defaults to RocketChatProvider) */
+  private provider: ProviderConfig;
 
-  /** Base URL for Rocket.Chat OpenAPI specs */
-  private static readonly SPEC_BASE_URL =
-    "https://raw.githubusercontent.com/RocketChat/Rocket.Chat-Open-API/main";
   /** TTL for disk cache (24 hours) */
   private static readonly CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+  constructor(provider?: ProviderConfig) {
+    this.provider = provider ?? RocketChatProvider;
+  }
+
+  /**
+   * Get all indexed endpoints.
+   * Use this instead of accessing endpointIndex directly.
+   */
+  getAllEndpoints(): EndpointSchema[] {
+    return Array.from(this.endpointIndex.values());
+  }
 
   /**
    * Load an OpenAPI spec from GitHub (with memory and disk fallback).
@@ -84,6 +97,44 @@ export class SchemaExtractor {
     await Promise.all(domains.map((d) => this.loadDomain(d)));
   }
 
+  /**
+   * Lightweight scan: determine which domains contain the given operationIds
+   * WITHOUT fully loading and indexing every spec. Scans the cached JSON
+   * files for operationId strings only.
+   */
+  async inferDomainsFromIds(operationIds: string[]): Promise<Domain[]> {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const cacheDir = resolve(__dirname, "..", "..", ".cache");
+
+    const remaining = new Set(operationIds);
+    const matched: Set<Domain> = new Set();
+
+    for (const domain of VALID_DOMAINS as readonly Domain[]) {
+      if (remaining.size === 0) break;
+      const cacheFile = join(cacheDir, `${domain}.json`);
+      if (!existsSync(cacheFile)) continue;
+
+      try {
+        const raw = readFileSync(cacheFile, "utf-8");
+        // Quick string scan — much cheaper than full JSON.parse
+        for (const id of remaining) {
+          if (raw.includes(`"${id}"`)) {
+            matched.add(domain);
+            remaining.delete(id);
+          }
+        }
+      } catch {
+        // Skip unreadable cache files
+      }
+    }
+
+    // Always include authentication for login auto-add
+    matched.add("authentication" as Domain);
+
+    return Array.from(matched);
+  }
+
   private async fetchWithCache(domain: Domain): Promise<OpenAPIV3.Document> {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
@@ -105,7 +156,7 @@ export class SchemaExtractor {
     }
 
     // Fetch from network
-    const url = `${SchemaExtractor.SPEC_BASE_URL}/${domain}.yaml`;
+    const url = `${this.provider.specSource.baseUrl}/${this.provider.specSource.domainToFilename(domain)}`;
     let api: OpenAPIV3.Document;
     try {
       api = (await SwaggerParser.dereference(url)) as OpenAPIV3.Document;
@@ -332,6 +383,52 @@ export class SchemaExtractor {
     // Handle $ref if it wasn't fully dereferenced by swagger-parser
     if ("$ref" in schema) {
       return { type: "object", $ref: (schema as any).$ref };
+    }
+
+    // ── oneOf / anyOf resolution ──────────────────────────────────────
+    // Many RC endpoints use oneOf for request bodies (e.g., chat.postMessage
+    // has a roomId-variant and a channel-variant). We merge all variants'
+    // properties into a single flat object so every field is available to
+    // the tool schema. All merged fields are treated as optional because
+    // no single variant requires every field.
+    const variants =
+      (schema as any).oneOf ?? (schema as any).anyOf ?? undefined;
+    if (variants && Array.isArray(variants) && variants.length > 0) {
+      const mergedProperties: Record<string, JsonSchemaProperty> = {};
+
+      for (const variant of variants) {
+        const v = variant as OpenAPIV3.SchemaObject;
+        if (v.properties) {
+          for (const [key, prop] of Object.entries(v.properties)) {
+            if (!mergedProperties[key]) {
+              mergedProperties[key] = this.normalizeSchema(
+                prop as OpenAPIV3.SchemaObject,
+              );
+            }
+          }
+        }
+      }
+
+      // Also merge any top-level properties that exist alongside oneOf
+      if (schema.properties) {
+        for (const [key, prop] of Object.entries(schema.properties)) {
+          if (!mergedProperties[key]) {
+            mergedProperties[key] = this.normalizeSchema(
+              prop as OpenAPIV3.SchemaObject,
+            );
+          }
+        }
+      }
+
+      if (Object.keys(mergedProperties).length > 0) {
+        return {
+          type: "object",
+          description: schema.description,
+          properties: mergedProperties,
+          // All fields optional — the caller picks the right variant
+          required: undefined,
+        };
+      }
     }
 
     return {

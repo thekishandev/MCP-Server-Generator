@@ -50,6 +50,10 @@ program
   .option("-n, --name <name>", "Custom name for the generated server")
   .option("--rc-url <url>", "Rocket.Chat server URL", "http://localhost:3000")
   .option(
+    "--workflows <names>",
+    "Comma-separated workflow names to generate as composite tools (use 'rc-mcp suggest' to discover)",
+  )
+  .option(
     "--gemini",
     "Auto-generate gemini-cli integration files (extension + GEMINI.md)",
   )
@@ -75,38 +79,65 @@ program
         `Using ${chalk.bold(endpointPaths.length)} specified endpoints`,
       );
 
-      // Step 2: Extract schemas from OpenAPI specs
-      spinner.start("Extracting API schemas...");
+      // Step 2: Resolve workflows (if any)
+      const { WorkflowRegistry } = await import("../core/workflow-registry.js");
+      const registry = new WorkflowRegistry();
+      const workflowNames = options.workflows
+        ? (options.workflows as string).split(",").map((w: string) => w.trim())
+        : [];
+      const workflowDefs = workflowNames.length > 0
+        ? registry.getWorkflows(workflowNames)
+        : [];
 
+      // Collect operationIds from workflow steps
+      const workflowOpIds = workflowDefs.flatMap((w) =>
+        w.steps.map((s) => s.operationId),
+      );
+      const allOpIds = [...new Set([...endpointPaths, ...workflowOpIds])];
+
+      // Step 3: Extract schemas from OpenAPI specs
       spinner.start("Extracting API schemas...");
       const extractor = new SchemaExtractor();
-      // In the new architecture, we fetch all domains remotely instead of local directory
-      await extractor.loadDomains([...VALID_DOMAINS]);
+      // Lazy domain loading — only load domains containing the requested endpoints
+      const neededDomains = await extractor.inferDomainsFromIds(allOpIds);
+      await extractor.loadDomains(neededDomains);
       // Convert endpoint paths to operationIds or fallback to fuzzy matching inside extractEndpoints
       let endpoints;
       try {
-        endpoints = extractor.extractEndpointsForIds(endpointPaths);
+        endpoints = extractor.extractEndpointsForIds(allOpIds);
       } catch {
         // To support legacy endpoints argument (which passes paths), we need to extract by path
-        // Since extractEndpoints is gone, we manually filter
-        const allEndpoints = Array.from(
-          (extractor as any).endpointIndex.values() as any[],
-        );
+        const allEndpoints = extractor.getAllEndpoints();
         endpoints = allEndpoints.filter(
           (ep: any) =>
-            endpointPaths.includes(ep.path) ||
-            endpointPaths.some((p) => ep.path.endsWith(p)),
+            allOpIds.includes(ep.path) ||
+            allOpIds.some((p) => ep.path.endsWith(p)),
         );
       }
       spinner.succeed(
         `Extracted schemas for ${chalk.bold(endpoints.length)} endpoints (from ${chalk.dim(extractor.getEndpointCount().toString())} total)`,
       );
 
-      // Step 3: Generate MCP tools
+      // Step 4: Generate MCP tools (raw + workflow composite)
       spinner.start("Generating MCP tools...");
       const generator = new ToolGenerator();
-      const tools = generator.generateTools(endpoints);
-      spinner.succeed(`Generated ${chalk.bold(tools.length)} MCP tools`);
+
+      // Generate raw 1:1 tools for endpoints not covered by workflows
+      const workflowCoveredOpIds = new Set(workflowOpIds);
+      const rawEndpoints = endpoints.filter(
+        (ep) => !workflowCoveredOpIds.has(ep.operationId),
+      );
+      const rawTools = generator.generateTools(rawEndpoints);
+
+      // Generate composite workflow tools
+      const workflowTools = workflowDefs.map((def) =>
+        generator.generateWorkflowTool(def, endpoints),
+      );
+
+      const tools = [...workflowTools, ...rawTools];
+      spinner.succeed(
+        `Generated ${chalk.bold(tools.length)} MCP tools (${rawTools.length} raw + ${workflowTools.length} workflow)`,
+      );
 
       // Step 4: Scaffold the server project
       const serverName = options.name ?? `rc-mcp-custom-server`;
@@ -199,149 +230,12 @@ program
     }
   });
 
-// ─── Integrate Command ────────────────────────────────────────────────
-
-program
-  .command("integrate")
-  .description(
-    "Generate gemini-cli integration files for an existing MCP server",
-  )
-  .argument("<server-dir>", "Path to a generated MCP server directory")
-  .option(
-    "--mode <mode>",
-    'Integration mode: "config" (settings.json snippet) or "extension" (full extension)',
-    "extension",
-  )
-  .option("--rc-url <url>", "Rocket.Chat server URL", "http://localhost:3000")
-  .option(
-    "--settings-path <path>",
-    "Path to write settings.json (config mode)",
-    "./gemini-settings.json",
-  )
-  .action(async (serverDir: string, options) => {
-    const spinner = ora();
-
-    try {
-      const absServerDir = resolve(serverDir);
-
-      if (!existsSync(absServerDir)) {
-        console.error(
-          chalk.red(`Error: Server directory not found: ${absServerDir}`),
-        );
-        process.exit(1);
-      }
-
-      // Re-run the pipeline to get tool metadata
-      // (we need the tool list for GEMINI.md generation)
-      spinner.start("Reading server configuration...");
-
-      // Try to read the generated README to extract capability info
-      const pkgPath = resolve(absServerDir, "package.json");
-      let serverName = "rc-mcp-server";
-      let description = "Minimal MCP server for Rocket.Chat";
-
-      if (existsSync(pkgPath)) {
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as Record<
-          string,
-          string
-        >;
-        serverName = pkg.name ?? serverName;
-        description = pkg.description ?? description;
-      }
-
-      spinner.succeed(`Server: ${chalk.bold(serverName)}`);
-
-      // Scan src/tools/ to discover tool files
-      const toolsDir = resolve(absServerDir, "src/tools");
-      let toolNames: string[] = [];
-
-      if (existsSync(toolsDir)) {
-        const { readdirSync } = await import("fs");
-        toolNames = readdirSync(toolsDir)
-          .filter((f: string) => f.endsWith(".ts"))
-          .map((f: string) => f.replace(".ts", ""));
-      }
-
-      // Build minimal tool metadata for documentation
-      const tools = toolNames.map((name) => ({
-        toolName: name,
-        description: `Rocket.Chat API tool: ${name.replace(/_/g, ".")}`,
-        zodSchemaCode: "z.object({})",
-        handlerCode: "",
-        endpoint: {
-          operationId: name,
-          path: `/api/v1/${name.replace(/_/g, ".")}`,
-          method: "post" as const,
-          summary: `${name.replace(/_/g, ".")}`,
-          description: "",
-          parameters: [],
-          responses: {},
-          requiresAuth: true,
-          tags: [],
-          sourceFile: "",
-          domain: "miscellaneous" as Domain,
-        },
-      }));
-
-      const config: ServerConfig = {
-        name: serverName,
-        description,
-        rcUrl: options.rcUrl,
-        capabilities: [],
-        outputDir: absServerDir,
-      };
-
-      const gemini = new GeminiCLIIntegration();
-      const integrationOpts = {
-        serverDir: absServerDir,
-        serverConfig: config,
-        tools,
-        mode: options.mode as "config" | "extension",
-      };
-
-      if (options.mode === "config") {
-        spinner.start("Generating settings.json snippet...");
-        const snippet = gemini.generateSettingsSnippet(integrationOpts);
-        const settingsPath = resolve(options.settingsPath);
-        gemini.writeSettingsSnippet(snippet, settingsPath);
-        spinner.succeed(
-          `Settings snippet written to ${chalk.bold(settingsPath)}`,
-        );
-
-        console.log(
-          `\n${chalk.dim("Merge this into your ~/.gemini/settings.json")}`,
-        );
-      } else {
-        spinner.start("Creating gemini-cli extension...");
-        const files = gemini.createExtension(integrationOpts);
-        spinner.succeed(
-          `Extension created with ${chalk.bold(files.length.toString())} files`,
-        );
-
-        console.log(chalk.bold("\nCreated:"));
-        for (const f of files) {
-          console.log(`  ${chalk.dim("├──")} ${chalk.magenta(f)}`);
-        }
-
-        const extDir = resolve(absServerDir, ".gemini-extension");
-        console.log(
-          `\n${chalk.dim(`Copy ${extDir} to ~/.gemini/extensions/${serverName}`)}`,
-        );
-      }
-    } catch (error) {
-      spinner.fail(
-        chalk.red(error instanceof Error ? error.message : "Unknown error"),
-      );
-      process.exit(1);
-    }
-  });
-
 // ─── Suggest Command ──────────────────────────────────────────────────
 
 program
   .command("suggest")
   .description(
-    "Use AI to suggest capabilities that match your natural-language intent (requires GEMINI_API_KEY or falls back to keyword matching)",
+    "Map natural language to Rocket.Chat API endpoint clusters using TF-IDF scoring and synonym expansion",
   )
   .argument("<intent>", "What you want to do, in plain English")
   .option("--top <n>", "Maximum number of suggestions to show", "3")
@@ -365,14 +259,8 @@ program
       const engine = new SuggestEngine();
       const topN = parseInt(options.top as string, 10) || 3;
 
-      const hasApiKey = Boolean(process.env.GEMINI_API_KEY);
-
       if (!options.json) {
-        spinner.start(
-          hasApiKey
-            ? "Analyzing intent with Gemini..."
-            : "Scoring capabilities with keyword matching (set GEMINI_API_KEY for AI-powered suggestions)...",
-        );
+        spinner.start("Scoring capabilities with TF-IDF + synonym matching...");
       }
 
       const suggestions = await engine.suggest(intent, topN);
@@ -396,14 +284,9 @@ program
         return;
       }
 
-      const modeLabel = hasApiKey
-        ? chalk.magenta("✦ Gemini")
-        : chalk.dim("⌘ Keyword fallback");
-
       console.log(
-        `\n${chalk.bold("Capability Suggestions")} ${chalk.dim(`for:`)} "${chalk.italic(intent)}"`,
+        `\n${chalk.bold("Capability Suggestions")} ${chalk.dim(`for:`)} "${chalk.italic(intent)}"\n`,
       );
-      console.log(chalk.dim(`Mode: ${modeLabel}\n`));
 
       const confidenceColor = (c: string) => {
         if (c === "high") return chalk.green(c);
@@ -440,14 +323,6 @@ program
       console.log(chalk.bold("→ Suggested command:"));
       console.log(`  ${chalk.cyan(generateCmd)}\n`);
 
-      if (!hasApiKey) {
-        console.log(
-          chalk.dim(
-            "Tip: Set GEMINI_API_KEY for AI-powered intent matching.\n" +
-              "     export GEMINI_API_KEY=your-key-here\n",
-          ),
-        );
-      }
 
       // --generate: spawn the generate pipeline with the top suggestion
       if (options.generate) {
@@ -507,17 +382,11 @@ program
       spinner.start("Extracting API schemas...");
 
       const extractor = new SchemaExtractor();
-      await extractor.loadDomains([...VALID_DOMAINS]);
+      // Lazy domain loading — only load domains containing the requested endpoints
+      const neededDomains = await extractor.inferDomainsFromIds(endpointPaths);
+      await extractor.loadDomains(neededDomains);
 
-      // Extract by paths / operationIds
-      const allEndpoints = Array.from(
-        (extractor as any).endpointIndex.values() as any[],
-      );
-      const endpoints = allEndpoints.filter(
-        (ep: any) =>
-          endpointPaths.includes(ep.path) ||
-          endpointPaths.includes(ep.operationId),
-      );
+      const endpoints = extractor.extractEndpointsForIds(endpointPaths);
 
       spinner.succeed(
         `Extracted ${chalk.bold(endpoints.length.toString())} endpoint schemas`,
@@ -572,7 +441,6 @@ program
       "tsconfig.json",
       "src/server.ts",
       "src/rc-client.ts",
-      "src/auth.ts",
       ".env.example",
     ];
 

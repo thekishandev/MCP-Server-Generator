@@ -1,260 +1,431 @@
-# 🚀 Minimal MCP Server Generator for Rocket.Chat
+# Minimal MCP Server Generator for Rocket.Chat
 
-**Generate production-ready, minimal MCP servers with only the Rocket.Chat APIs you need.**
+> **GSoC 2026 · Rocket.Chat · Mentor(s): Hardik Bhatia, Dhairyashil Shinde**
 
-Solves the #1 structural problem with Model Context Protocol (MCP) adoption: **Context Bloat**. Instead of loading 500+ API tools into your LLM's context window, generate a surgically precise server with just 2–12 tools — achieving **99%+ context reduction** and lowering inference costs.
+## The Problem You Already Know
 
-- ⚡ **Deterministic generation** — zero LLM calls in the generation pipeline.
-- 🧠 **AI-powered discovery** (`suggest`) — maps natural language intent → capability via Gemini or fully offline keyword fallback.
-- 📉 **Surgical extraction** — 97–99% reduction in endpoints, schema size, and token overhead.
-- 🏛️ **Dual-Layer Architecture** — distinct separation between AI reasoning and strict code generation.
-- 🧪 **Professional maturity** — rigorous "Definition of Done", passing unit tests, zero TypeScript errors.
-- 🧩 **`gemini-cli` Best Practices** — auto-generates `.gemini-extension`, `GEMINI.md`, and secures credentials using `sensitive: true` settings.
+If you've built an MCP server, you've hit this wall:
+
+You register tools for an LLM agent. Each tool carries its name, description, and full JSON Schema parameters — all serialized into the context window on every single prompt. For a platform like Rocket.Chat with **547 REST API endpoints** across 12 OpenAPI specs, that's **~115,200 tokens** injected before the model even starts reasoning.
+
+In agentic loops, this cost compounds: `O(N × T)` — where `N` is iterations and `T` is token waste per iteration. Five agentic runs on Gemini 2.0 Flash's free tier? Budget gone. The model hasn't even written useful code yet.
+
+But the waste isn't just financial. It's structural:
+
+| What breaks | Why |
+|---|---|
+| **Token Burning** | Agents in loops pay ~115K tokens **per iteration** on static tool definitions. 100 iterations/day = 11.5M tokens burned — most of it on APIs the project will never use. On free-tier plans, budget exhausts in ~5 runs |
+| **Tool Confusion & Hallucination** | 547 tools with near-identical prefixes (`channels.list` vs `channels.list.joined` vs `channels.online`) cause the model to invoke the wrong endpoint. This triggers cascade failures: wrong tool → bad response → retry with another wrong tool → each retry re-pays the full 115K context cost |
+| **Reasoning Degradation** | Static JSON Schema bloat consumes the context window, leaving less room for Chain-of-Thought reasoning, degrading output quality, and increasing response latency |
+| **Cost scalability** | Every agent iteration re-pays the full 115K token tax, making MCP adoption economically unviable for open-source projects on free-tier plans |
+
+This is the "context bloat" problem. Every current MCP server has it. Most teams work around it. We fix it at the root.
 
 ---
 
-**Watch the Demo Video:**
+## What This Project Does
+
+`rc-mcp` generates **standalone, minimal MCP servers** containing only the 2–12 Rocket.Chat API endpoints your agent actually needs. The generated server is a complete, independent Node.js project — not a filtered view of a monolith.
+
+```
+Before:  LLM ──→ Full MCP Server (547 tools, ~115K tokens) ──→ tool confusion, token waste
+After:   LLM ──→ Minimal MCP Server (2-12 tools, ~795 tokens) ──→ correct tool use, 99.7% savings
+```
+
+The generation pipeline uses **zero LLM calls**. Same `operationIds` in → same server out. Every time, deterministically.
+
+### The Result
+
+| Metric | Full Server | Generated Minimal Server | Reduction |
+|---|:---:|:---:|:---:|
+| Endpoints | 547 | 2 | **99.6%** |
+| Schema payload | 2.2 MB | 3.1 KB | **99.9%** |
+| JSON Schema components | 138 | 3 | **97.8%** |
+| Average Token footprint | ~115,201 | ~795 | **99.7%** |
+
+These numbers are not estimates. They're computed by the built-in `rc_analyze_minimality` tool and are reproducible on every run.
+
+---
 
 <div align="center">
   <a href="https://youtu.be/kqjsCxgBl5A">
-    <img src="https://img.youtube.com/vi/kqjsCxgBl5A/maxresdefault.jpg" alt="Minimal MCP Server Generator MVP Demo" width="80%">
+    <img src="https://img.youtube.com/vi/kqjsCxgBl5A/maxresdefault.jpg" alt="Minimal MCP Server Generator — Full Demo" width="80%">
   </a>
+  <p><em>▶ Watch the end-to-end demo: natural language → generated server → validated & proven minimal</em></p>
 </div>
 
 ---
 
-## 🛑 The Core Problem: Context Bloat
+## Architecture
 
-When adopting MCP, agents interact with external services via tools. However, most MCP servers expose the **entire API surface** of a platform.
-
-For Rocket.Chat, this means feeding the full API spectrum into every single LLM prompt:
-
-| Dimension  | Full Server | With `rc-mcp` (e.g., Send Message) | Reduction |
-| ---------- | :---------: | :--------------------------------: | :-------: |
-| Endpoints  |     558     |                 2                  | **99.6%** |
-| Schema     |   2.2 MB    |               3.1 KB               | **99.9%** |
-| Components |     138     |                 3                  | **97.8%** |
-| Tokens     |  ~184,000   |                ~661                | **99.6%** |
-
-### Why is this bad?
-
-- **Token Burning:** Agents operating loops pay that massive token cost on every single iteration, draining free-tiers and budgets.
-- **Tool Confusion & Hallucination:** Models confronted with hundreds of similar tools (e.g., `channels.list` vs `channels.list.joined`) frequently invoke the wrong one.
-- **Slower Reasoning:** Bloated context limits reasoning space and decelerates model response times.
-
-### The Solution
-
-We flip the model. **MCP servers should be minimal by construction.** Rather than pruning unused endpoints at runtime, `rc-mcp` generates an entirely fresh, independent MCP Node.js project containing exactly and only the APIs required for your requested capability. Minimality is deterministic, mathematical, and provable.
-
----
-
-## 🏛️ Dual-Layer Architecture
-
+The system has two layers. AI handles discovery. Code generation is entirely deterministic.
 
 ```mermaid
 flowchart TB
     subgraph USER["User Intent"]
-        I["Natural Language Prompt\ne.g., 'Build me a moderation server'"]
+        I["'Build me a server for sending messages'"]
     end
 
-    subgraph AGENT["Gemini CLI (LLM Agent)"]
-        O["Agent Orchestrator"]
+    subgraph AGENT["Gemini CLI Agent"]
+        O["Orchestrator\nsrc/extension/server.ts"]
     end
 
-    subgraph DISCOVERY["Layer 1: AI Discovery Tools"]
-        S["rc_suggest_endpoints\nMulti-cluster semantic mapping"]
-        F["rc_search_endpoints\nPrecision text search to fill gaps"]
-        D["rc_discover_endpoints\nDomain browsing (progressive disclosure)"]
+    subgraph L1["Layer 1: AI Discovery (4 tools)"]
+        S["rc_suggest_endpoints\nSuggestEngine → TF-IDF + SynonymMap"]
+        SE["rc_search_endpoints\nSuggestEngine → text search + synonyms"]
+        D["rc_discover_endpoints\nSchemaExtractor → tag-based browsing"]
+        W["rc_list_workflows\nWorkflowRegistry → 13 compositions"]
     end
 
-    subgraph PIPELINE["Layer 2: Deterministic Pipeline Tools"]
-        G["rc_generate_server\nZero-LLM strict scaffolding"]
-        V["rc_validate_server\nZod, tests, & type-checks"]
-        A["rc_analyze_minimality\nMathematical footprint proof"]
+    subgraph L2["Layer 2: Deterministic Generation (3 tools)"]
+        G["rc_generate_server"]
+        subgraph PIPE["Generation Pipeline (zero LLM)"]
+            P1["1. WorkflowRegistry\nResolve workflow names → operationIds"]
+            P2["2. SchemaExtractor\nLazy domain load → $ref pruning → EndpointSchema[]"]
+            P3["3. ToolGenerator + WorkflowComposer\nZod schemas + handlers + auth injection"]
+            P4["4. ServerScaffolder\nHandlebars → complete Node.js project"]
+        end
+        subgraph POST["Auto Post-Generation"]
+            P5["npm install + build"]
+            P6["~/.gemini/settings.json registration"]
+            P7["Structural validation + tsc --noEmit"]
+            P8["MinimalityAnalyzer\nToken reduction proof"]
+        end
+        V["rc_validate_server\nStandalone structural + type check"]
+        A["rc_analyze_minimality\nStandalone token analysis"]
     end
 
-    subgraph ENGINE["Core Generation Engine"]
-        SE["Schema Extractor\nDynamic GitHub YAML indexing"]
-        TG["Tool Generator\nZod Schema & Handler creation"]
-        SS["Server Scaffolder\nAuto-injects Login + Auth dependencies"]
-    end
-
-    subgraph OUTPUT["Generated MCP Server"]
-        SRV["Production-ready Node.js Project\n100% Deterministic Code"]
+    subgraph OUT["Output"]
+        SRV["Production MCP Server\nPre-authenticated, minimal"]
     end
 
     I --> O
-    O <-->|Browses contextual API subset| DISCOVERY
-    O -->|Decides final operationIds| PIPELINE
+    O --> S & SE & D & W
 
-    G --> ENGINE
-    V --> ENGINE
-    A --> ENGINE
+    S & SE & D & W --> G
 
-    SE --> TG --> SS
-    SS --> SRV
+    G --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> SRV
+
+    O --> V
+    O --> A
 ```
 
-The system is strictly divided to ensure safety, predictability, and usability. **AI belongs exclusively at the orchestration and discovery layer**, while the infrastructure layer (the actual code generation) remains **100% deterministic**.
+**Why two layers?** AI is useful for figuring out *which* endpoints to include. It has no place in the code generation itself. Mixing LLM inference into scaffolding introduces non-determinism, token cost, and hallucination risk — exactly the problems we're solving.
 
-### Layer 1: AI Discovery (The Context Savers)
+### Layer 1: AI Discovery — 4 Tools
 
-Developers don't need to know exact `operationIds`. They describe their intent in plain English to the Gemini CLI agent, which uses 3 distinct lookup tools:
+The developer describes what they want in plain English. The Gemini CLI agent uses four discovery tools to identify the right `operationIds` and `workflows`:
 
-- **`rc_suggest` (Primary):** The starting point. It maps a single natural language intent to **multiple** highly relevant API clusters across different domains simultaneously. Powered by our V4 engine's semantic mapping and strict domain guarantees.
-- **`rc_search` (Gap Filler):** If the initial suggestion missed a specific corner case, the agent searches the entire 558-endpoint index via keywords to pinpoint exact operations.
-- **`rc_discover` (Open Exploration):** If the user is just browsing, this tool implements progressive disclosure. The agent reads high-level tag summaries, and only expands the tags it finds relevant, preventing monolithic context bloat.
+| Tool | What it does | How it works internally |
+|---|---|---|
+| `rc_suggest_endpoints` | Maps vague intent → multiple API clusters in one call | V4 `SuggestEngine` (`suggest-engine.ts`, 567 lines): offline weighted keyword scoring (TF-IDF), 82-entry synonym expansion via `synonym-map.ts`, intelligent clustering to ensure a diverse set of tools (set-cover algorithm), and guaranteed domain coverage. |
+| `rc_search_endpoints` | Keyword search across all 547 endpoints | Same synonym expansion + TF-IDF scoring engine, returns flat ranked results instead of clusters |
+| `rc_discover_endpoints` | Browsable tag summaries → expand specific tags on demand | `SchemaExtractor.getEndpointsByTag()` — groups by `Domain → Tag → EndpointSchema[]`. First call returns summaries (~100 lines); expansion reveals individual endpoints. Prevents context blowout during exploration |
+| `rc_list_workflows` | List 13 predefined workflow compositions | `WorkflowRegistry.getWorkflows()` — returns composed tools that combine multiple RC API endpoints into single, higher-level operations (e.g. `send_message_to_channel`). |
 
-### Layer 2: Deterministic Generation & QA
+### Layer 2: Deterministic Pipeline — 3 Tools
 
-Once the agent knows exactly which `operationIds` it needs, it hands off to the deterministic tools. There is zero LLM intervention in writing the server code:
+Once the agent has selected `operationIds` and/or `workflows`, the pipeline executes with zero LLM involvement:
 
-1. **`SchemaExtractor`**: Surgically parses the 12 official OpenAPI YAML files directly from GitHub. It extracts _only_ the demanded endpoints and deeply resolves the recursive `$ref` dependency tree (up to depth 10) for required data models. It aggressively caches results locally in `.cache/` for 24 hours to ensure speed.
-2. **`ToolGenerator`**: Transforms OpenAPI JSON shapes into TypeScript Zod schema definitions and executable MCP tool handler functions. Compresses tool descriptions to ≤120 characters to prevent verbose API descriptions from hijacking the context window.
-3. **`ServerScaffolder`**: Assembles a complete, runnable Node.js project. **It automatically injects the basic authentication (`login`) endpoint if any requested tools require auth**, scaffolding `server.ts`, tools, configurations, and intelligent dynamic `vitest` stubs.
-4. **`Validator` & `Analyzer`**: The agent proves its work. It runs the structural validations and generates a mathematical footprint report, guaranteeing the user gets a working, minimal output.
+**`rc_generate_server`** orchestrates the Core Engine components, followed by automated post-generation steps:
 
----
+| Component | File | What it does |
+|---|---|---|
+| **Workflow Registry** | `workflow-registry.ts` | Resolves requested workflow names into exact API operation paths (`WorkflowDefinition`s) prior to schema extraction. |
+| **Schema Extractor** | `schema-extractor.ts` (486 lines) | Fetches and fully dereferences the 12 Rocket.Chat OpenAPI YAML specs using `@apidevtools/swagger-parser`. Supports **lazy domain loading** via `inferDomainsFromIds()` — scans cached JSON strings to determine which 2-3 domains out of 12 need loading, bypassing unnecessary network overhead. Resolves all nested `$ref` chains. Handles `oneOf`/`anyOf` by merging variants into flat structures. |
+| **Tool Generator** | `tool-generator.ts` & `workflow-composer.ts` | Transforms `EndpointSchema[]` → `GeneratedTool[]`. Auto-injects `authToken` + `userId` into Zod schemas. Uses its internal `WorkflowComposer` sub-engine to generate composite tools via AST mapping, chaining multiple endpoints into single platform operations. |
+| **Server Scaffolder** | `server-scaffolder.ts` (674 lines) | Assembles a complete Node.js project using 9 Handlebars inline templates. Output: `src/server.ts`, `src/tools/*.ts`, `src/rc-client.ts`, `tests/*.test.ts`, `package.json`, `tsconfig.json`, `.env.example`, `README.md`. |
 
-## 🧠 V4 AI Suggest Engine Improvements
+**Automated post-generation** (all performed by `rc_generate_server` in a single call):
 
-The `rc_suggest_endpoints` tool is powered by a custom-built, heavily optimized semantic search engine explicitly designed to bridge natural language intent to API vocabulary. In **v4**, we implemented several advanced algorithms to achieve pristine endpoint clustering without noise:
+| Step | What it does |
+|---|---|
+| **`.env` creation** | Writes a real `.env` with provided `rcUrl`, `rcAuthToken`, `rcUserId` so the server is pre-authenticated on first run |
+| **`npm install` + `npm run build`** | Installs dependencies and compiles TypeScript (skippable via `installDeps: false`) |
+| **Gemini CLI registration** | Auto-updates `~/.gemini/settings.json` with the new server's MCP entry, so tools are immediately available after restarting gemini (skippable via `registerWithGemini: false`) |
+| **Inline validation** | Checks all required files exist + runs `tsc --noEmit` for type safety |
+| **Minimality analysis** | Computes 4-dimension pruning report inline — no separate tool call needed |
 
-- **Semantic Synonym Mapping:** Users say `"monitor"`, `"transfer"`, or `"assign"`. The engine bridges these terms to `"statistics"`, `"forward"`, and `"role"` to reliably hit exact API domains, even when vernacular doesn't perfectly match Rocket.Chat's internal identifiers.
-- **Dynamic Domain Coverage Guarantee:** When the user explicitly asks for a distinct feature (e.g., `"statistics"`), the engine guarantees representation of that capability mathematically, preventing dominant clusters (like `"chat"`) from starving smaller, but requested, functional areas.
-- **Strict Field-Weighted Set-Cover Algorithm:** Bloated endpoint `descriptions` cannot steal coverage away from precise `operationId` matches. The engine implements greedy set-cover picking using a strict `fieldWeight >= 2` rule (meaning only actual tags, IDs, summaries, and paths count towards intent coverage).
-- **Per-Cluster Noise Filtering:** Endpoints that only weakly match the user's intent are dynamically discarded if they score `< 50%` compared to the strongest endpoint in their cluster, entirely eliminating "tag-alongs" (e.g., preventing `rooms.delete` from contaminating a request for creating discussions).
+**`rc_validate_server`** audits the generated output across 4 categories:
 
----
+| Check | What passes |
+|---|---|
+| Structure | `package.json`, `tsconfig.json`, `src/server.ts`, `src/rc-client.ts`, `.env.example` exist |
+| MCP compliance | `@modelcontextprotocol/sdk` and `zod` in dependencies |
+| Tool coverage | Every `src/tools/*.ts` contains `z.object()`; every tool has a matching `tests/*.test.ts` |
+| Deep type safety | `npx tsc --noEmit` inside the generated project — zero TypeScript compilation errors |
 
-## ✔️ Redefining the "Definition of Done"
-
-Generated code isn't finished until it is tested and structurally sound. The `rc-mcp` generator holds its output to rigorous professional standards.
-
-### Deep Validation Protocol (`rc_validate_server --deep`)
-
-Upgraded from basic structural checks to **20 precise validations**:
-
-- Verifies exact `zod` schema imports and exports natively for every generated tool (`Tool Coverage`).
-- Asserts strict Model Context Protocol connection syntax inside `server.ts`.
-- Ensures test file existence maps exactly 1:1 with generated tools (`Test Coverage`).
-- Executes `npx tsc --noEmit` inside the generated project, strictly failing on any TypeScript errors (`Deep Type Safety`).
-
-### Dynamic Scaffolding & Intelligent Tests
-
-The generator does not just create empty placeholder tests (`expect(true)`). It scaffolds intelligent Vitest suites that dynamically inspect the generated Zod schema signatures (`instanceof z.ZodObject`). The tests automatically verify structure validation, type safety mismatches, and failures on missing required parameters out of the box.
+**`rc_analyze_minimality`** computes a 4-dimension pruning report: endpoint count reduction, schema payload reduction, component count reduction, and estimated token savings. Uses `$ref` resolution depth tracking (recursive to 15 levels) and a 4 chars/token estimation heuristic.
 
 ---
 
-## 💎 gemini-cli Best Practices
+## The V4 Suggest Engine — How Intent Maps to Endpoints
 
-`rc-mcp` is designed fundamentally around the official [Gemini CLI Extension Best Practices](https://geminicli.com/docs/extensions/best-practices/):
+When a developer says *"build a customer support bot"*, the engine needs to find the right APIs across messaging, omnichannel, and user management — without any LLM call.
 
-1. **Secure Sensitive Settings**: Auto-generates the `settings` manifest array to securely prompt for `RC_USER` and `RC_PASSWORD`, securely marking passwords with `sensitive: true` so they are stored in the host OS keychain.
-2. **Effective `GEMINI.md`**: Auto-generates an insightful contextual `GEMINI.md` file tailored directly to the extracted operations, instructing the LLM on exactly how to use the specific Rocket.Chat tools provided.
-3. **TypeScript & Bundling**: Scaffolds a full TypeScript project containing pre-configured build steps to output JavaScript safely for the extension engine.
-4. **Minimal Permissions**: By shrinking to the exact toolset required, it intrinsically guards against over-permissioning the model (e.g., preventing a send-message agent from being able to delete users).
-5. **Gallery & Git Release Ready**: The generator outputs a repository-ready structure with `gemini-extension.json` at the absolute root. You can publish your generated server directly to GitHub, allowing instantly installable extensions via `gemini extensions install <your-repo-url>`.
-6. **Local Iteration**: Easily iterate on your generated server using the `gemini extensions link .` command in the output directory.
+The `SuggestEngine` class (`src/core/suggest-engine.ts`, 567 lines) powers the `rc_suggest_endpoints` tool. It operates entirely offline, generating highly specialized clusters that are passed directly back to the native Gemini CLI agent to orchestrate:
+
+### Phase 1: Semantic Scoring & Clustering (The Engine)
+
+**Step 1: Tokenization & Synonym Expansion**
+```
+Input:     "create project channel, invite members, send task updates"
+Tokenized: ["creat", "project", "channel", "invit", "member", "send", "task", "updat"]
+Expanded:  ["creat", "project", "channel", "invit", "member", ..., "add", "join", "post", "chat", ...]
+```
+
+Uses a custom minimal Porter stemmer + 48-word stop set. The synonym map (`synonym-map.ts`, 82 entries) bridges user vocabulary to API vocabulary: `"invite"` → `["invite", "add", "join", "member"]`, `"star"` → `["star", "starmessage", "starred", "bookmark", "favorite"]`.
+
+**Step 2: TF-IDF Scoring with Field Weights**
+
+Every token is scored against all 547 endpoints. The field the token appears in determines its weight:
+
+| Field | Weight | Why |
+|---|:---:|---|
+| `operationId` | **10×** | Most precise API identifier |
+| `path` | **5×** | Structured endpoint name |
+| `tags` | **3×** | Semantic domain grouping |
+| `summary` | **2×** | Concise OpenAPI description |
+| `description` | **0.1×** | Verbose boilerplate — nearly ignored to prevent false matches |
+
+```
+score = Σ [ IDF(token) × directWeight × fieldWeight ]
+
+  IDF(token) = log(N / df(token))        — N = 547 endpoints, df = document frequency
+  directWeight = 3 if original intent token, 1 if synonym-only
+  fieldWeight = max weight across all fields containing the token
+```
+
+**Step 3: Cluster Grouping**
+
+Endpoints are grouped by `domain::tag`. Within each cluster:
+- Endpoints scoring <50% of the cluster's top scorer are dropped (noise filtering)
+- Maximum 5 endpoints per cluster
+- Only `fieldWeight ≥ 2` matches count toward coverage (prevents description-text false positives)
+
+**Step 4: Greedy Set-Cover Selection**
+
+```
+while remaining_clusters > 0 and selected < 5:
+    for each candidate:
+        new_coverage = uncovered intent tokens this cluster would cover
+        penalty = 0.5 if this domain already selected, else 1.0
+        score = new_coverage × penalty
+    select highest-scoring cluster
+    break if full coverage achieved
+```
+
+**Step 5: Domain Coverage Guarantee**
+
+If the intent explicitly mentions a domain (detected via `DOMAIN_HINTS`, ~60 keyword→domain mappings), the engine force-adds that domain's best cluster — even if the greedy algorithm didn't select it.
+
+**Step 6: Confidence**
+
+```
+coverage = |covered_original_tokens| / |intent_tokens|
+confidence = coverage ≥ 0.5 → "high" | ≥ 0.25 → "medium" | else → "low"
+```
+
+### Phase 2: Native Agent Orchestration (The Brain)
+
+Once the `SuggestEngine` computes the optimal endpoint clusters, the **built-in models inside Gemini CLI** act as the "Brain." There is no need for an external `GEMINI_API_KEY` or custom outbound API calls. The native Gemini agent inspects the TF-IDF results, communicates the options to the user, and autonomously invokes the `rc_generate_server` pipeline.
 
 ---
 
-## ⚡ Quick Start (Agentic Workflow)
+## How Context Reduction Actually Works
 
-The primary way to use `rc-mcp` is **natively inside the `gemini-cli`** as an MCP extension. The agent orchestrates the discovery, generation, and validation for you.
+Seven specific techniques, each targeting a different source of token waste:
 
-### 1. Installation & Linking
+### 1. Surgical `$ref` Pruning
+`SchemaExtractor` uses `@apidevtools/swagger-parser` to fully dereference all `$ref` chains. Lazy domain loading via `inferDomainsFromIds()` scans cached JSON strings to determine which 2-3 domains (out of 12) actually need loading. The engine prunes 2.2 MB → 3.1 KB.
+
+### 2. Description Compression (≤120 chars)
+`ToolGenerator` enforces `MAX_DESC_LENGTH = 120`, stripping OpenAPI boilerplate:
+```ts
+desc.replace(/\s*\(requires authentication\)/gi, "")
+    .replace(/\s*\(admin only\)/gi, "")
+    .replace(/\s*Permission required:.*$/gi, "")
+```
+
+### 3. Per-Request Auth Injection
+For `requiresAuth` endpoints, `ToolGenerator` prepends two Zod fields instead of requiring a login tool:
+```ts
+authToken: z.string().describe("Rocket.Chat Auth Token (X-Auth-Token)")
+userId: z.string().describe("Rocket.Chat User ID (X-User-Id)")
+```
+The handler calls `rcClient.setAuth(params.authToken, params.userId)` before each request. Collision-safe: if the endpoint itself has fields named `authToken` or `userId`, the injected fields are prefixed with `_rc`.
+
+### 4. Progressive Disclosure
+`rc_discover_endpoints` returns tag summaries first (~100 lines), not the full endpoint list (~10,000 lines). The agent expands only relevant tags via `expand: ["tagName"]`.
+
+### 5. Multi-Cluster Semantic Mapping
+One call to `rc_suggest_endpoints` returns cross-domain clusters covering all parts of the intent. No iterative prompt engineering needed.
+
+### 6. 2-Tier Caching
+```
+Tier 1: Disk (.cache/ — 24h TTL, stored as dereferenced JSON)
+  ↓ miss
+Tier 2: GitHub raw fetch (SwaggerParser.dereference(url))
+```
+After first run, all operations use the disk cache. Generation completes in milliseconds.
+
+### 7. Zero-LLM Pipeline
+`SchemaExtractor` → `ToolGenerator` → `ServerScaffolder` uses zero API calls. Deterministic, free, and fast.
+
+---
+
+## Quick Start
+
+### Install & Link
 
 ```bash
-# Clone and build the project
 git clone https://github.com/thekishandev/MCP-Server-Generator.git
 cd MCP-Server-Generator
 npm install && npm run build
 
-# Link the generator to Gemini CLI
+# Register as a Gemini CLI extension
 gemini extensions link .
 ```
 
-### 2. Enter the Gemini CLI
+### Generate a Server (Agentic Workflow)
 
 ```bash
 gemini
 ```
 
-### 3. Generate via Natural Language
+> *"Generate MCP server for team collaboration that sends direct messages, creates discussion threads, reacts to messages with emoji and pins important announcements."*
 
-Instruct the agent to build your server using plain English:
+The Gemini agent will:
+1. Call `rc_suggest_endpoints` → receive multi-cluster suggestions
+2. Confirm the endpoint list with you
+3. Call `rc_generate_server` → write files, install deps, build, register with Gemini CLI, validate, and run minimality analysis — **all in one call**
+4. Output a ready-to-use server — just restart `gemini` and the new tools are available
 
-> _"Use the Rocket.Chat tools to discover endpoints for managing channel members and kicking users, then generate an MCP server for them. Finally, run deep validation on the output."_
-
-The Gemini agent will autonomously call the discovery tools, recommend the exact `operationIds`, cleanly scaffold the Node.js project, and run the minimality/validation reports—all within the chat interface!
-
----
-
-## 🛠️ MCP Tools Reference (For the LLM Agent)
-
-When linked to an LLM, the generator exposes these 6 native MCP tools:
-
-| Tool Name               | Purpose for the Agent                                                  |
-| :---------------------- | :--------------------------------------------------------------------- |
-| `rc_suggest_endpoints`  | Maps the human's vague intent to multiple API clusters via V4 Engine.  |
-| `rc_search_endpoints`   | Full-text index search to pinpoint exact operations or fill gaps.      |
-| `rc_discover_endpoints` | Browses the 558-endpoint API via progressive disclosure (tags first).  |
-| `rc_generate_server`    | Scaffolds the complete Node.js server project to disk.                 |
-| `rc_analyze_minimality` | Provides mathematical proof of token/schema reduction vs the full API. |
-| `rc_validate_server`    | Runs structural, type-safety (`--deep`), and test coverage checks.     |
-
----
-
-## 💻 Standalone CLI Reference (Under the Hood)
-
-You can also bypass the LLM entirely and run the deterministic pipeline directly from your terminal:
-
-| Command                     | Purpose                                                                  | Key Flags / Options                                                          |
-| --------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `rc-mcp suggest "<intent>"` | Maps natural language to endpoints (AI / Keyword fallback).              | `--top <n>`, `--json`, `--generate`, `--gemini`, `-o <dir>`, `--rc-url`      |
-| `rc-mcp analyze`            | Deep minimality reporting (pruning metrics, token estimation).           | `--endpoints <p1,p2>`, `--json`                                              |
-| `rc-mcp generate`           | Generates the complete minimalistic Node.js server project.              | `--endpoints <p1,p2>`, `--gemini`, `-o <dir>`, `--rc-url`, `--name <string>` |
-| `rc-mcp validate <dir>`     | Runs structural and architectural compliance checks on output.           | `--deep` (Executes TS compilation checks inside output directory)            |
-| `rc-mcp integrate <dir>`    | Retroactively injects `gemini-cli` integration into established outputs. | `--mode <extension\|config>`                                                 |
-
----
-
-## 🎯 Testing & E2E Demo
-
-### 134 Tests & Deep Coverage
-
-The core codebase and its generated outputs are rigorously tested.
+### Generate a Server (Direct CLI — No LLM)
 
 ```bash
-# Run all vitest suites with 0 TypeScript errors
+rc-mcp suggest "send messages and manage channels" --generate -o ./my-server
+rc-mcp validate ./my-server --deep
+rc-mcp analyze --endpoints post-api-v1-chat-sendMessage,post-api-v1-channels-create
+```
+
+---
+
+## MCP Tools Reference
+
+6 tools registered via `@modelcontextprotocol/sdk` using `StdioServerTransport`:
+
+| Tool | Purpose | Parameters |
+|---|---|---|
+| `rc_suggest_endpoints` | Intent → multi-cluster API suggestions | `intent: string` |
+| `rc_search_endpoints` | Keyword search across 547 endpoints | `query: string`, `domains?: Domain[]`, `limit?: number` |
+| `rc_discover_endpoints` | Tag summaries → expandable endpoint lists | `domains: Domain[]`, `expand?: string[]` |
+| `rc_list_workflows`      | List 13 predefined composite workflows | `{}` |
+| `rc_generate_server` | Scaffold, install, build, register, validate — all-in-one | `operationIds?: string[]`, `workflows?: string[]`, `outputDir: string`, `serverName?`, `rcUrl?`, `rcAuthToken?`, `rcUserId?`, `installDeps?`, `registerWithGemini?` |
+| `rc_analyze_minimality` | 4-dimension pruning proof | `operationIds: string[]` |
+| `rc_validate_server` | Structure + MCP + Zod + `tsc` validation | `serverDir: string`, `deep?: boolean` |
+
+**`rc_generate_server` auto-performs** (saves 2+ round-trip tool calls):
+- ✅ Writes `.env` with provided credentials (pre-authenticated on first run)
+- ✅ `npm install` + `npm run build`
+- ✅ Registers in `~/.gemini/settings.json` (restart gemini to use new tools)
+- ✅ Structural validation + `tsc --noEmit` type check
+- ✅ 4-dimension minimality analysis
+
+**12 Supported Domains:** `authentication` · `messaging` · `rooms` · `user-management` · `omnichannel` · `integrations` · `settings` · `statistics` · `notifications` · `content-management` · `marketplace-apps` · `miscellaneous`
+
+---
+
+## Validation & Testing
+
+### 96 Tests (91 Passing, 5 Skipped) · 0 TypeScript Errors
+
+```bash
 npm test
 ```
 
-_Suites map directly to core architecture (`suggest-engine.test.ts`, `server-scaffolder.test.ts`, `schema-extractor.test.ts`, etc.), and the environment dynamically sweeps through over 30 generated tool test files to ensure Zod/Type safety at scale._
+| Suite | What it validates |
+|---|---|
+| `suggest-engine.test.ts` | TF-IDF scoring accuracy, synonym expansion, cluster grouping, deduplication, search results |
+| `tool-generator.test.ts` | Zod codegen correctness, auth injection, description compression, handler generation |
+| `server-scaffolder.test.ts` | Template rendering, file output structure, `package.json` integrity |
+| `schema-extractor.test.ts` | Domain loading, endpoint indexing, fuzzy matching |
+| `minimality-analyzer.test.ts` | Reduction calculations, `$ref` depth analysis, report formatting |
+| `workflow-*.test.ts` | 39 tests proving the Zod generation and handler resolution of 13 composite workflows |
+| `extension-server.test.ts` | MCP tool registration, server export verification |
+| 30+ generated tool tests | Dynamic Zod `safeParse` validation, shape introspection, type rejection |
 
-### End-To-End Agentic Demo
+### Generated Test Intelligence
 
-We provide a comprehensive step-by-step master script for demonstrating the full capability of the project natively inside the Gemini CLI.
-
-Please refer to the [DEMO_GUIDE.md](./DEMO_GUIDE.md) in the project root to walk through AI Discovery, Progressive Disclosure, Deterministic Generation, and rigorous Definition of Done validation.
+Test files are not `expect(true)` stubs. Each generated test:
+1. Asserts the schema is a `z.ZodObject` instance
+2. Inspects `.shape` to identify required fields
+3. Verifies `safeParse({})` fails when required fields exist
+4. Rejects invalid data types (`string` where `object` expected)
 
 ---
 
-## 🛠️ Technical Stack & Dependencies
+## Gemini CLI Extension Integration
 
-- **Language:** TypeScript (Strict Mode execution)
-- **Runtime:** Node.js 18+
-- **CLI Framework:** Commander.js
-- **Templating:** Handlebars
-- **Schema Safety:** Zod
-- **Integration:** `@modelcontextprotocol/sdk`
-- **AI Gateway:** `@google/generative-ai` (Gemini API `v1`)
-- **Testing Engine:** Vitest
+Built following [Gemini CLI Extension Best Practices](https://geminicli.com/docs/extensions/best-practices/):
+
+| Practice | Implementation |
+|---|---|
+| Secure secrets | `gemini-extension.json` marks `RC_PASSWORD` with `sensitive: true` → OS keychain storage |
+| Contextual docs | Auto-generates `GEMINI.md` documenting available tools, parameters, auth requirements |
+| TypeScript build | Full TypeScript project → `tsc` → `dist/` JavaScript output |
+| Minimal permissions | Only 2-12 tools exposed → agent physically cannot invoke unrelated APIs |
+| Gallery-ready | `gemini-extension.json` at repo root → `gemini extensions install <url>` |
+| Local dev | `gemini extensions link .` for instant iteration |
+| Auto-registration | `rc_generate_server` auto-updates `~/.gemini/settings.json` — no manual config needed |
+
+---
+
+## Project Structure
+
+```
+MCP-Server-Generator/
+├── src/
+│   ├── cli/
+│   │   └── index.ts                    # Commander.js CLI entry point (823 lines)
+│   ├── core/
+│   │   ├── types.ts                    # 13 shared TypeScript interfaces (168 lines)
+│   │   ├── schema-extractor.ts         # OpenAPI parser + lazy domain loading + 2-tier cache (486 lines)
+│   │   ├── tool-generator.ts           # JSON Schema → Zod codegen (383 lines)
+│   │   ├── server-scaffolder.ts        # 9 Handlebars templates (674 lines)
+│   │   ├── suggest-engine.ts           # V4 TF-IDF engine (567 lines)
+│   │   ├── synonym-map.ts             # 82 synonyms + 60 domain hints
+│   │   ├── minimality-analyzer.ts      # 4-dimension analysis (679 lines)
+│   │   ├── gemini-integration.ts       # Extension manifest generator (271 lines)
+│   │   └── index.ts                    # Barrel export
+│   └── extension/
+│       └── server.ts                   # Live 6-tool MCP server (597 lines)
+├── tests/                              # 11 test files, 96 tests
+├── .cache/                             # Dereferenced OpenAPI JSON (24h TTL)
+├── gemini-extension.json               # Extension manifest (v0.2.0)
+├── GEMINI.md                           # LLM context instructions
+└── package.json                        # rc-mcp v0.1.0
+```
+
+---
+
+## Technical Stack
+
+| Layer | Technology | Version |
+|---|---|---|
+| Language | TypeScript (strict, ES2022, NodeNext) | ^5.7.0 |
+| Runtime | Node.js | ≥18.0.0 |
+| CLI | Commander.js | ^12.1.0 |
+| OpenAPI Parser | `@apidevtools/swagger-parser` | ^12.1.0 |
+| Templates | Handlebars | ^4.7.8 |
+| Schema Validation | Zod | ^3.25.76 |
+| MCP SDK | `@modelcontextprotocol/sdk` | ^1.27.1 |
+| Testing | Vitest | ^4.0.18 |
+| YAML | yaml | ^2.6.1 |
+| Terminal UX | Chalk + Ora | ^5.3.0 / ^8.1.1 |
 
 ---
 
 ## License
 
-MIT
-</br> (A project tailored for Google Summer of Code with Rocket.Chat)
+MIT — A GSoC 2026 project with [Rocket.Chat](https://rocket.chat)

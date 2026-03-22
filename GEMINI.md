@@ -8,7 +8,7 @@ Your generated servers contain only what's needed (2-12 endpoints).
 
 ### rc_suggest_endpoints ⭐ START HERE
 
-Map a natural language user intent to specific API endpoint clusters. Returns **multiple clusters** grouped by functional area (e.g., channel-management, messaging, user-discovery) with cross-domain coverage. Uses synonym expansion and TF-IDF scoring.
+Map a natural language user intent to specific API endpoint clusters. Returns **multiple clusters** grouped by functional area (e.g., channel-management, messaging, user-discovery) with cross-domain coverage. Uses TF-IDF keyword scoring with synonym expansion and cross-domain clustering.
 
 **Input:** `{ intent: string }`
 
@@ -35,12 +35,19 @@ Use `expand` to reveal individual endpoints for specific tags.
 **Default output:** Tag summaries grouped by domain
 **Expanded output:** Individual endpoints for expanded tags only
 
+### rc_list_workflows ⭐ NEW
+
+List predefined workflow compositions. A workflow composes multiple RC API endpoints (e.g., channel lookup + message posting) into a **single, higher-level MCP tool**. This maps raw APIs into user-centric operations.
+
+**Input:** `{}`
+**Output:** 13 available workflows with descriptions and required parameters.
+
 ### rc_generate_server
 
-Generate complete MCP server from selected operationIds. Writes files to disk.
+Generate complete MCP server from selected operationIds and/or workflows. Writes files to disk.
 Auto-adds login if endpoints require auth.
 
-**Input:** `{ endpoints: string[], outputDir: string, serverName?: string }`
+**Input:** `{ operationIds?: string[], workflows?: string[], outputDir: string, serverName?: string }`
 
 ### rc_analyze_minimality
 
@@ -71,6 +78,12 @@ Validate generated server: structure, MCP compliance, Zod schemas, test coverage
 | marketplace, apps                       | marketplace-apps   |
 | server info, DNS, licenses              | miscellaneous      |
 
+## Workflow Composition Layer
+
+The generator goes beyond 1:1 API wrapping. It can compose multiple endpoints into single high-level operations. Use `rc_list_workflows` to see the 13 predefined workflows (e.g., `send_message_to_channel` which wires `channels.info` -> `chat.postMessage`). 
+
+Pass these names to the `workflows` parameter in `rc_generate_server` to generate composite tools alongside any raw `operationIds`.
+
 ## Context Management Best Practices
 
 (Adapted from Claude Code / Advanced LLM CLI guidelines)
@@ -81,23 +94,19 @@ Validate generated server: structure, MCP compliance, Zod schemas, test coverage
 
 ## Workflow
 
-1. **Understand intent** — Call `rc_suggest_endpoints` with the FULL user intent. This now returns multi-cluster results covering channels, messaging, users, etc.
-2. **Review clusters** — Check if the clusters cover ALL parts of the user's intent.
-3. **Fill gaps** — If anything is missing, call `rc_search_endpoints` with specific terms (NOT `rc_discover_endpoints`).
-4. **Recommend endpoints** — Combine the clusters into a minimal set, explain why each is needed.
-5. **Confirm** — Let user adjust. Do NOT ask about output directory yet.
-6. **Choose location** — Ask where to save.
-7. **Generate** — Call `rc_generate_server`.
-8. **Validate & Analyze** — Call `rc_validate_server` with `deep: true` + `rc_analyze_minimality`. Show the minimality report and validation results. Always use deep validation.
+1. **Understand intent** — Call `rc_suggest_endpoints` with the FULL user intent. It returns cross-domain clusters in one call.
+2. **Fill gaps (if needed)** — Only if clusters are clearly incomplete, call `rc_search_endpoints` with specific terms.
+3. **Confirm & collect credentials** — Present the minimal endpoint list to the user. Ask for output directory, RC_URL, authToken, userId.
+4. **Generate** — Call `rc_generate_server` with the confirmed endpoints + credentials. This auto-installs, builds, validates (deep TypeScript check), runs minimality analysis, and registers with Gemini CLI — all in one call. No need to call `rc_validate_server` or `rc_analyze_minimality` separately.
 
-> **Key change:** `rc_suggest_endpoints` now returns cross-domain results in one call. You should rarely need `rc_discover_endpoints` anymore — use it only for open-ended exploration when the user is browsing, not searching.
+> `rc_validate_server` and `rc_analyze_minimality` are still available as standalone tools for post-hoc checks, but are no longer required in the generation workflow.
+>
+> **Testing Scope:** The core generator has 96 tests (91 passing, 5 conditionally skipped) running in Vitest, including 13 workflow integration tests that validate handler wiring against mocked RC API responses, and 8 E2E scaffold verification tests across all 13 composite workflows.
 
 ## Rules
 
 - Always recommend the MINIMAL set of endpoints
 - Present results as clean readable lists, never raw JSON
 - Do NOT dump generated file contents — files are written to disk
-- Do NOT re-expand previously viewed tags
-- Always run validate + analyze after generation (this is our Definition of Done)
-- Always pass `deep: true` to `rc_validate_server` to verify TypeScript compilation
+- Do NOT call `rc_validate_server` or `rc_analyze_minimality` after `rc_generate_server` — it runs them automatically
 - Prefer `rc_suggest_endpoints` → `rc_search_endpoints` → `rc_discover_endpoints` (in that order)

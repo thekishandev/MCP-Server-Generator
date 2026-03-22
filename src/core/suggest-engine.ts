@@ -2,19 +2,15 @@
  * SuggestEngine
  *
  * Maps natural-language user intent to Rocket.Chat API endpoints using
- * the Gemini API. If no GEMINI_API_KEY is set, gracefully falls back to
- * an enhanced keyword-based scorer with synonym expansion, TF-IDF weighting,
- * and multi-cluster cross-domain grouping.
+ * an offline TF-IDF scoring algorithm with synonym expansion and multi-cluster
+ * cross-domain grouping.
  *
- * Design principle: LLM is used ONCE at discovery time to map intent → operationIds.
- * Generation remains 100% deterministic — no LLM involved there.
+ * The Gemini CLI agent acts as the reasoning brain — it receives the scored
+ * clusters from this tool and orchestrates the rest of the workflow.
+ * No external API key or outbound LLM calls are made here.
  *
- * v2 improvements:
- * - Multi-cluster results grouped by domain/tag (not flat top-5)
- * - Synonym expansion bridges user vocabulary ↔ API vocabulary
- * - TF-IDF scoring weights rare terms higher than common ones
- * - Domain inference searches only relevant domains first
- * - Two-phase LLM prompting to reduce token usage
+ * Design principle: Discovery is TF-IDF + heuristics. Generation is 100%
+ * deterministic. The Gemini CLI model handles all natural-language reasoning.
  */
 
 import { readFileSync, existsSync } from "fs";
@@ -32,7 +28,7 @@ const __dirname = dirname(__filename);
 export interface SuggestionResult {
   /** A descriptive name for the match, e.g. "channels" or "messaging" */
   capability: string;
-  /** LLM or keyword-scorer's brief explanation */
+  /** Scorer's brief explanation of why these endpoints match the intent */
   reason: string;
   /** Confidence level produced by the scorer */
   confidence: "high" | "medium" | "low";
@@ -40,13 +36,11 @@ export interface SuggestionResult {
   endpoints: string[];
   /** Convenience alias for endpoints.length */
   endpointCount: number;
-  /** true = result came from LLM, false = offline keyword fallback */
-  fromLLM: boolean;
-  /** The domain this cluster belongs to (v2) */
+  /** The domain this cluster belongs to */
   domain?: string;
 }
 
-interface LLMSuggestion {
+interface ScoredSuggestion {
   capability: string;
   reason: string;
   confidence: "high" | "medium" | "low";
@@ -67,9 +61,7 @@ export class SuggestEngine {
     if (this.endpoints.length > 0) return;
     const extractor = new SchemaExtractor();
     await extractor.loadDomains([...VALID_DOMAINS]);
-    const allEndpoints = Array.from(
-      (extractor as any).endpointIndex.values() as EndpointSchema[],
-    );
+    const allEndpoints = extractor.getAllEndpoints();
     // Filter out login, as it's automatically added later
     this.endpoints = allEndpoints.filter(
       (ep) =>
@@ -79,26 +71,16 @@ export class SuggestEngine {
 
   /**
    * Suggest capabilities that match the user's natural-language intent.
+   * Uses offline TF-IDF scoring — no external API calls.
    *
    * @param intent  - The user's description of what they want to do
    * @param topN    - Maximum number of suggestion clusters to return (default: 5)
    * @returns Ordered list of SuggestionResult, best match first
    */
   async suggest(intent: string, topN = 5): Promise<SuggestionResult[]> {
-    const apiKey = process.env.GEMINI_API_KEY;
-
     await this.loadEndpoints();
 
-    let raw: LLMSuggestion[];
-    let fromLLM: boolean;
-
-    if (apiKey) {
-      raw = await this._suggestWithLLM(intent, apiKey);
-      fromLLM = true;
-    } else {
-      raw = this._suggestWithKeywords(intent);
-      fromLLM = false;
-    }
+    const raw = this._suggestWithKeywords(intent);
 
     // Deduplicate preserving order
     const seen = new Set<string>();
@@ -115,116 +97,17 @@ export class SuggestEngine {
       confidence: s.confidence,
       endpoints: s.endpoints,
       endpointCount: s.endpoints.length,
-      fromLLM,
     }));
   }
 
-  // ─── LLM path ─────────────────────────────────────────────────────
-
-  private async _suggestWithLLM(
-    intent: string,
-    apiKey: string,
-  ): Promise<LLMSuggestion[]> {
-    // Dynamic import so the module is only loaded when needed
-    const { GoogleGenerativeAI } = await import("@google/generative-ai");
-    const client = new GoogleGenerativeAI(apiKey);
-    const modelName = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
-    const model = client.getGenerativeModel(
-      { model: modelName },
-      { apiVersion: "v1" },
-    );
-
-    // Phase 1: Use domain hints + synonym expansion to narrow scope
-    const intentTokens = this._tokenize(intent);
-    const relevantDomains = inferDomains(intentTokens);
-
-    // Only include endpoints from relevant domains (+ a few from others for safety)
-    let scopedEndpoints: EndpointSchema[];
-    if (relevantDomains.length > 0) {
-      const domainSet = new Set(relevantDomains);
-      const relevant = this.endpoints.filter((ep) => domainSet.has(ep.domain));
-      // If we narrowed too aggressively, include all
-      scopedEndpoints = relevant.length > 10 ? relevant : this.endpoints;
-    } else {
-      scopedEndpoints = this.endpoints;
-    }
-
-    // Phase 2: Build compact registry summary
-    const registrySummary = scopedEndpoints
-      .map(
-        (ep) =>
-          `- "${ep.operationId}": ${ep.summary} [${ep.domain}] (${ep.method.toUpperCase()} ${ep.path})`,
-      )
-      .join("\n");
-
-    const prompt = `You are a capability selector for a Rocket.Chat MCP server generator tool.
-
-Your task is to map a user's description of what they want to do to specific API endpoints.
-
-## Available Endpoints
-${registrySummary}
-
-## User Intent
-"${intent}"
-
-## Instructions
-- Return a JSON array of suggestion CLUSTERS, ordered best match first
-- Each cluster should represent a LOGICAL GROUP (e.g., "channel-management", "messaging", "user-discovery")
-- Select the MINIMAL set of exact endpoints needed to fulfill each part of the intent
-- Group endpoints by their functional area — don't put all endpoints in one cluster
-- Max 5 clusters. Each cluster covers a distinct part of the user's intent.
-- Each cluster must have: 
-  - capability (string: a short hyphenated name like "channel-management" or "messaging")
-  - reason (string: 1-sentence explanation of why these endpoints are needed for this part of the intent)
-  - confidence ("high"|"medium"|"low")
-  - endpoints (array of string: exact operationIds from the list above)
-- IMPORTANT: Cover ALL parts of the user's intent across the clusters. If the intent mentions "send messages AND star messages AND create channels", make sure endpoints for ALL three appear somewhere.
-- No other text, just the JSON array.
-
-## Response format
-[
-  { 
-    "capability": "channel-management",
-    "reason": "Endpoints for creating and configuring project channels",
-    "confidence": "high",
-    "endpoints": ["post-api-v1-channels.create", "post-api-v1-channels.setDescription"]
-  },
-  {
-    "capability": "messaging",
-    "reason": "Endpoints for sending task updates and starring important messages",
-    "confidence": "high",
-    "endpoints": ["post-api-v1-chat.postMessage", "post-api-v1-chat.starMessage"]
-  }
-]`;
-
-    const result = await model.generateContent(prompt);
-    const text = result.response.text().trim();
-
-    // Strip markdown code fences if the model wraps with them
-    const jsonText = text
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/, "")
-      .trim();
-
-    const parsed = JSON.parse(jsonText) as LLMSuggestion[];
-    // Validate operationIds
-    const validIds = new Set(this.endpoints.map((e) => e.operationId));
-    return parsed
-      .map((s) => ({
-        ...s,
-        endpoints: (s.endpoints || []).filter((id) => validIds.has(id)),
-      }))
-      .filter((s) => s.endpoints.length > 0);
-  }
-
-  // ─── Offline keyword fallback (v2: multi-cluster + synonyms) ──────
+  // ─── TF-IDF keyword scorer (v4: multi-cluster + synonyms) ───────────
 
   /**
    * Score each endpoint by TF-IDF-weighted keyword overlap, then group
    * results into clusters by domain/tag. Returns multiple clusters, each
    * representing a different functional area.
    */
-  _suggestWithKeywords(intent: string): LLMSuggestion[] {
+  _suggestWithKeywords(intent: string): ScoredSuggestion[] {
     const intentTokens = this._tokenize(intent);
     if (intentTokens.length === 0) return [];
 

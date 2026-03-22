@@ -134,6 +134,10 @@ export interface ServerConfig {
   description: string;
   /** Rocket.Chat server URL (for .env template) */
   rcUrl?: string;
+  /** Rocket.Chat auth token — baked into .env if provided during generation */
+  rcAuthToken?: string;
+  /** Rocket.Chat user ID — baked into .env if provided during generation */
+  rcUserId?: string;
   /** List of capabilities this server supports */
   capabilities: string[];
   /** Output directory path */
@@ -146,6 +150,56 @@ export interface GeneratedFile {
   relativePath: string;
   /** File content */
   content: string;
+}
+
+// ─── Workflow Composition Types ──────────────────────────────────────────
+
+/** How data flows from one workflow step's response to the next step's input */
+export interface ParameterMapping {
+  /** Index of the source step (0-based) */
+  fromStep: number;
+  /** Dot-path into the source step's response JSON, e.g., "channel._id" */
+  fromField: string;
+  /** Parameter name this value feeds into for the current step */
+  toParam: string;
+}
+
+/** A single step in a workflow — one RC API call */
+export interface WorkflowStep {
+  /** RC API operationId to call, e.g., "post-api-v1-chat.postMessage" */
+  operationId: string;
+  /** How previous step outputs wire into this step's inputs — REQUIRED for generic composition */
+  parameterMappings: ParameterMapping[];
+  /** Optional human-readable description for debugging */
+  description?: string;
+}
+
+/** A parameter exposed to the user (not auto-wired between steps) */
+export interface UserParam {
+  /** Parameter name shown to the user/LLM */
+  name: string;
+  /** JSON Schema type: "string" | "number" | "boolean" | "array" */
+  type: string;
+  /** Whether this parameter is required */
+  required: boolean;
+  /** Description for the LLM */
+  description: string;
+  /** Which step (0-based index) this feeds into */
+  forStep: number;
+  /** Parameter name in that step's API call */
+  asParam: string;
+}
+
+/** A complete workflow definition mapping a high-level operation to multiple API calls */
+export interface WorkflowDefinition {
+  /** MCP tool name, e.g., "send_message_to_channel" */
+  name: string;
+  /** LLM-facing description of what this workflow does */
+  description: string;
+  /** Ordered execution steps — each is one RC API call */
+  steps: WorkflowStep[];
+  /** Parameters exposed to the user (everything else is auto-wired) */
+  userParams: UserParam[];
 }
 
 // ─── CLI Types ──────────────────────────────────────────────────────────

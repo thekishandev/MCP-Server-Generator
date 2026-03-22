@@ -25,6 +25,7 @@ const mockTool: GeneratedTool = {
     requiresAuth: true,
     tags: [],
     sourceFile: "messaging.yaml",
+    domain: "messaging",
   },
 };
 
@@ -46,11 +47,16 @@ describe("ServerScaffolder", () => {
 
       expect(paths).toContain("src/server.ts");
       expect(paths).toContain("src/rc-client.ts");
-      expect(paths).toContain("src/auth.ts");
       expect(paths).toContain("package.json");
       expect(paths).toContain("tsconfig.json");
       expect(paths).toContain(".env.example");
       expect(paths).toContain("README.md");
+    });
+
+    it("should NOT generate auth.ts (auth is per-request via tool params)", () => {
+      const files = scaffolder.scaffold([mockTool], mockConfig);
+      const paths = files.map((f) => f.relativePath);
+      expect(paths).not.toContain("src/auth.ts");
     });
 
     it("should generate a tool file for each tool", () => {
@@ -82,12 +88,19 @@ describe("ServerScaffolder", () => {
       expect(pkg?.content).toContain("@modelcontextprotocol/sdk");
     });
 
-    it("should include RC credentials in .env.example", () => {
+    it("should NOT include RC_USERNAME or RC_PASSWORD in .env.example (only token-based auth)", () => {
       const files = scaffolder.scaffold([mockTool], mockConfig);
       const env = files.find((f) => f.relativePath === ".env.example");
       expect(env?.content).toContain("RC_URL");
-      expect(env?.content).toContain("RC_USER");
-      expect(env?.content).toContain("RC_PASSWORD");
+      // Must not include username/password credentials — only token-based auth (RC_AUTH_TOKEN + RC_USER_ID)
+      expect(env?.content).not.toContain("RC_USERNAME");
+      expect(env?.content).not.toContain("RC_PASSWORD");
+    });
+
+    it("should NOT import auth.ts in generated server.ts", () => {
+      const files = scaffolder.scaffold([mockTool], mockConfig);
+      const server = files.find((f) => f.relativePath === "src/server.ts");
+      expect(server?.content).not.toContain("import { authenticate }");
     });
   });
 });

@@ -9,6 +9,7 @@ import {
   ToolGenerator,
   ServerScaffolder,
   MinimalityAnalyzer,
+  WorkflowRegistry,
 } from "../core/index.js";
 import { VALID_DOMAINS, type Domain } from "../core/types.js";
 
@@ -115,19 +116,16 @@ server.tool(
         };
       }
 
-      let result = `Suggestions for intent: "${intent}"\n\n`;
       const allEndpoints: string[] = [];
+      let result = `Intent: "${intent}"\n`;
 
       for (let i = 0; i < suggestions.length; i++) {
         const s = suggestions[i]!;
-        result += `${i + 1}. ${s.capability} (Confidence: ${s.confidence})\n`;
-        result += `   Reason: ${s.reason}\n`;
-        result += `   Endpoints: ${s.endpoints.join(", ")}\n\n`;
+        result += `\n${i + 1}. [${s.confidence}] ${s.capability}: ${s.endpoints.join(", ")}\n`;
         allEndpoints.push(...s.endpoints);
       }
 
-      result += `\n── Combined Endpoint List (${allEndpoints.length} total) ──\n`;
-      result += allEndpoints.map((ep, i) => `  ${i + 1}. ${ep}`).join("\n");
+      result += `\nCombined (${allEndpoints.length}): ${allEndpoints.join(", ")}`;
 
       return {
         content: [{ type: "text", text: result.trimEnd() }],
@@ -203,7 +201,7 @@ server.tool(
 // Tool 3: Generate Server
 server.tool(
   "rc_generate_server",
-  "Generate a complete, minimal MCP server project containing only the specified Rocket.Chat API operationIds.",
+  "Generate a complete, minimal MCP server project. Asks for Rocket.Chat credentials to bake into .env so the server is pre-configured on first run. Automatically runs npm install + build and registers the server with Gemini CLI.",
   {
     operationIds: z
       .array(z.string())
@@ -212,14 +210,33 @@ server.tool(
       ),
     outputDir: z.string().describe("Directory to output the generated server"),
     serverName: z.string().optional().describe("Name for the generated server"),
+    rcUrl: z.string().optional().describe("Rocket.Chat server URL (e.g., http://localhost:3000). Gets written to .env."),
+    rcAuthToken: z.string().optional().describe("Rocket.Chat X-Auth-Token. Gets written to .env so the server is pre-authenticated."),
+    rcUserId: z.string().optional().describe("Rocket.Chat X-User-Id. Gets written to .env so the server is pre-authenticated."),
+    installDeps: z.boolean().optional().describe("Run npm install + npm run build after generation (default: true). Set to false to skip."),
+    registerWithGemini: z.boolean().optional().describe("Auto-register the server in ~/.gemini/settings.json for Gemini CLI (default: true). Set to false to skip."),
+    workflows: z.array(z.string()).optional().describe('Optional workflow names to generate as composite tools (e.g., ["send_message_to_channel"]). Use rc_list_workflows to see available workflows.'),
   },
-  async ({ operationIds, outputDir, serverName }) => {
+  async ({ operationIds, outputDir, serverName, rcUrl, rcAuthToken, rcUserId, installDeps, registerWithGemini, workflows }) => {
     try {
-      // Find which domains these operationIds belong to (requires all domains to be loaded for now)
-      const extractor = new SchemaExtractor();
-      await extractor.loadDomains([...VALID_DOMAINS]);
+      // ─── Resolve all needed operationIds (raw + from workflows) ──────
+      const registry = new WorkflowRegistry();
+      const workflowDefs = workflows ? registry.getWorkflows(workflows) : [];
 
-      let endpoints = extractor.extractEndpointsForIds(operationIds);
+      // Collect operationIds from workflow steps
+      const workflowOpIds = workflowDefs.flatMap((w) =>
+        w.steps.map((s) => s.operationId),
+      );
+
+      // Combine raw operationIds + workflow operationIds (deduped)
+      const allOpIds = [...new Set([...operationIds, ...workflowOpIds])];
+
+      // Lazy domain loading: only load the domains containing the requested endpoints
+      const extractor = new SchemaExtractor();
+      const neededDomains = await extractor.inferDomainsFromIds(allOpIds);
+      await extractor.loadDomains(neededDomains);
+
+      let endpoints = extractor.extractEndpointsForIds(allOpIds);
 
       // Auto-add login if auth is required
       const needsAuth = endpoints.some((ep) => ep.requiresAuth);
@@ -230,9 +247,7 @@ server.tool(
 
       if (needsAuth && !hasLogin) {
         // find login endpoint manually
-        const allEndpoints = Array.from(
-          (extractor as any).endpointIndex.values() as any[],
-        );
+        const allEndpoints = extractor.getAllEndpoints();
         const loginEndpoint = allEndpoints.filter(
           (ep: any) => ep.path === "/api/v1/login",
         );
@@ -242,27 +257,169 @@ server.tool(
       }
 
       const generator = new ToolGenerator();
-      const tools = generator.generateTools(endpoints);
+
+      // Generate raw 1:1 tools for endpoints not covered by workflows
+      const workflowCoveredOpIds = new Set(workflowOpIds);
+      const rawEndpoints = endpoints.filter(
+        (ep) => !workflowCoveredOpIds.has(ep.operationId),
+      );
+      const rawTools = generator.generateTools(rawEndpoints);
+
+      // Generate composite workflow tools
+      const workflowTools = workflowDefs.map((def) =>
+        generator.generateWorkflowTool(def, endpoints),
+      );
+
+      const tools = [...workflowTools, ...rawTools];
 
       const name = serverName ?? "rc-mcp-server";
       const absOutputDir = resolve(outputDir);
+
+      // Auto-fill credentials from env (set during `gemini extensions link`) if not passed explicitly
+      const resolvedRcUrl = rcUrl ?? process.env.RC_URL ?? "http://localhost:3000";
+      const resolvedAuthToken = rcAuthToken ?? process.env.RC_AUTH_TOKEN ?? undefined;
+      const resolvedUserId = rcUserId ?? process.env.RC_USER_ID ?? undefined;
 
       const config = {
         name,
         description: `Minimal MCP server for Rocket.Chat generated by rc-mcp.`,
         capabilities: [],
         outputDir: absOutputDir,
+        rcUrl: resolvedRcUrl,
+        rcAuthToken: resolvedAuthToken,
+        rcUserId: resolvedUserId,
       };
 
       const scaffolder = new ServerScaffolder();
       const files = scaffolder.scaffold(tools, config);
       scaffolder.writeFiles(files, absOutputDir);
 
+      // ─── Write .env with actual credentials ───────────────────────────
+      // The scaffolder writes .env.example; write a real .env when credentials are provided.
+      const { writeFileSync, mkdirSync } = await import("fs");
+      const envLines = [
+        `# Rocket.Chat Server Configuration`,
+        `RC_URL=${resolvedRcUrl}`,
+        ``,
+        `# Authentication credentials (baked in during generation)`,
+        `RC_AUTH_TOKEN=${resolvedAuthToken ?? ""}`,
+        `RC_USER_ID=${resolvedUserId ?? ""}`,
+      ];
+      writeFileSync(resolve(absOutputDir, ".env"), envLines.join("\n"), "utf-8");
+
+      const statusLines: string[] = [
+        `✓ Server files written → ${absOutputDir}`,
+        `✓ .env created with credentials`,
+      ];
+
+      // ─── Install deps & build ─────────────────────────────────────────
+      const shouldInstall = installDeps !== false;
+      if (shouldInstall) {
+        try {
+          const { execSync } = await import("child_process");
+          execSync("npm install", { cwd: absOutputDir, stdio: "pipe" });
+          execSync("npm run build", { cwd: absOutputDir, stdio: "pipe" });
+          statusLines.push(`✓ npm install + build complete`);
+        } catch (buildErr) {
+          const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
+          statusLines.push(`⚠ Build failed: ${msg.slice(0, 200)}`);
+        }
+      }
+
+      // ─── Register with Gemini CLI ─────────────────────────────────────
+      const shouldRegister = registerWithGemini !== false;
+      if (shouldRegister) {
+        try {
+          const { readFileSync, writeFileSync: wf, mkdirSync: md } = await import("fs");
+          const { homedir } = await import("os");
+          const { join: pjoin } = await import("path");
+
+          const geminiDir = pjoin(homedir(), ".gemini");
+          const settingsPath = pjoin(geminiDir, "settings.json");
+
+          // Read existing settings or start fresh
+          let settings: Record<string, unknown> = {};
+          try {
+            settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+          } catch {
+            // File doesn't exist or is malformed — start fresh
+          }
+
+          // Ensure mcpServers object exists
+          if (!settings.mcpServers || typeof settings.mcpServers !== "object") {
+            settings.mcpServers = {};
+          }
+
+          const serverDistPath = resolve(absOutputDir, "dist", "server.js");
+          const mcpEntry: Record<string, unknown> = {
+            command: "node",
+            args: [serverDistPath],
+            env: {
+              RC_URL: resolvedRcUrl,
+              ...(resolvedAuthToken ? { RC_AUTH_TOKEN: resolvedAuthToken } : {}),
+              ...(resolvedUserId ? { RC_USER_ID: resolvedUserId } : {}),
+            },
+          };
+
+          (settings.mcpServers as Record<string, unknown>)[name] = mcpEntry;
+
+          // Ensure ~/.gemini exists
+          md(geminiDir, { recursive: true });
+          wf(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+
+          statusLines.push(`✓ Registered "${name}" in ~/.gemini/settings.json`);
+          statusLines.push(`  → Restart Gemini CLI and tell it to: send a hello message to channel #general`);
+        } catch (regErr) {
+          const msg = regErr instanceof Error ? regErr.message : String(regErr);
+          statusLines.push(`⚠ Gemini CLI registration failed: ${msg.slice(0, 200)}`);
+        }
+      }
+
+      // ─── Auto-validate + minimality analysis (saves 2 round trips) ───
+      let validationSummary = "";
+      let minimalitySummary = "";
+      try {
+        // Quick structural validation
+        const requiredFiles = ["package.json", "tsconfig.json", "src/server.ts", "src/rc-client.ts"];
+        const missing = requiredFiles.filter(f => !existsSync(resolve(absOutputDir, f)));
+        if (missing.length === 0) {
+          validationSummary = `✓ Validation: all ${requiredFiles.length} required files present`;
+        } else {
+          validationSummary = `⚠ Validation: missing ${missing.join(", ")}`;
+        }
+
+        // Deep type check if deps were installed
+        if (shouldInstall) {
+          try {
+            const { execSync: execS } = await import("child_process");
+            execS("npx tsc --noEmit", { cwd: absOutputDir, stdio: "pipe" });
+            validationSummary += `, TypeScript: 0 errors`;
+          } catch {
+            validationSummary += `, TypeScript: compilation errors`;
+          }
+        }
+
+        // Minimality analysis
+        const analyzer = new MinimalityAnalyzer();
+        const report = analyzer.analyze(OPENAPI_SPEC_DIR, endpoints, []);
+        minimalitySummary = `✓ Minimality: ${report.endpoints.totalInSpecs} → ${report.endpoints.selectedEndpoints} endpoints (${report.tokens.tokenReductionPercentage.toFixed(1)}% token reduction, ~${report.tokens.tokensSaved.toLocaleString()} tokens saved)`;
+      } catch {
+        // Non-fatal — report generation still succeeded
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: `Server successfully generated at ${absOutputDir} with ${endpoints.length} endpoints.`,
+            text: [
+              `Server generated: ${absOutputDir} (${endpoints.length} endpoints)`,
+              ...statusLines,
+              validationSummary,
+              minimalitySummary,
+              shouldRegister
+                ? `Restart gemini to use the new "${name}" tools.`
+                : `Add "${name}" to ~/.gemini/settings.json manually.`,
+            ].filter(Boolean).join("\n"),
           },
         ],
       };
@@ -280,7 +437,48 @@ server.tool(
   },
 );
 
-// Tool 4: Analyze Minimality
+// Tool 4: List Available Workflows
+server.tool(
+  "rc_list_workflows",
+  "List predefined workflow compositions that generate higher-level MCP tools (not raw API wrappers). Each workflow composes 2-5 RC API endpoints into a single tool.",
+  {},
+  async () => {
+    try {
+      const registry = new WorkflowRegistry();
+      const workflows = registry.listWorkflows();
+
+      let result = `═══ Available Workflow Compositions (${workflows.length}) ═══\n\n`;
+      result += `These workflows generate COMPOSITE tools that chain multiple\nRC API calls into a single higher-level operation.\n\n`;
+
+      for (const w of workflows) {
+        const steps = w.steps.map((s) => s.operationId).join(" → ");
+        result += `── ${w.name} ──\n`;
+        result += `  ${w.description}\n`;
+        result += `  Steps: ${steps}\n`;
+        result += `  User params: ${w.userParams.map((p) => `${p.name}${p.required ? "*" : ""}`).join(", ")}\n\n`;
+      }
+
+      result += `Use these names in the "workflows" parameter of rc_generate_server.\n`;
+      result += `Example: workflows: ["send_message_to_channel", "create_project_channel"]`;
+
+      return {
+        content: [{ type: "text", text: result }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error listing workflows: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+// Tool 5: Analyze Minimality
 server.tool(
   "rc_analyze_minimality",
   "Analyze and prove the context reduction for a set of Rocket.Chat API operationIds vs the full API surface.",
@@ -290,16 +488,24 @@ server.tool(
   async ({ operationIds }) => {
     try {
       const extractor = new SchemaExtractor();
-      await extractor.loadDomains([...VALID_DOMAINS]);
+      // Lazy domain loading — only load domains containing requested endpoints
+      const neededDomains = await extractor.inferDomainsFromIds(operationIds);
+      await extractor.loadDomains(neededDomains);
       const endpoints = extractor.extractEndpointsForIds(operationIds);
 
       const analyzer = new MinimalityAnalyzer();
-      // Pass OPENAPI_SPEC_DIR as placeholder, MinimalityAnalyzer currently reads raw files for schema size
-      // We should ideally update MinimalityAnalyzer to use the parsed JSON, but for now this works if specs are cached
       const report = analyzer.analyze(OPENAPI_SPEC_DIR, endpoints, []);
 
+      // Return compact summary instead of full ASCII table to save tokens
+      const compact = [
+        `Endpoints: ${report.endpoints.totalInSpecs} → ${report.endpoints.selectedEndpoints} (${report.endpoints.pruningPercentage.toFixed(1)}% pruned)`,
+        `Schema: ${report.reduction.schemaReduction}`,
+        `Tokens: ~${report.tokens.fullServerTokens.toLocaleString()} → ~${report.tokens.minimalServerTokens.toLocaleString()} (${report.tokens.tokenReductionPercentage.toFixed(1)}% saved)`,
+        `Verdict: ${report.reduction.overallVerdict}`,
+      ].join("\n");
+
       return {
-        content: [{ type: "text", text: analyzer.formatReport(report) }],
+        content: [{ type: "text", text: compact }],
       };
     } catch (error) {
       return {
@@ -349,7 +555,6 @@ server.tool(
         "tsconfig.json",
         "src/server.ts",
         "src/rc-client.ts",
-        "src/auth.ts",
         ".env.example",
       ];
       for (const file of requiredFiles) {

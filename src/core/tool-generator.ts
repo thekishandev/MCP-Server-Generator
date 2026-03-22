@@ -10,17 +10,37 @@ import type {
   EndpointSchema,
   GeneratedTool,
   JsonSchemaProperty,
+  WorkflowDefinition,
 } from "./types.js";
+import { WorkflowComposer } from "./workflow-composer.js";
 
 export class ToolGenerator {
+  private workflowComposer = new WorkflowComposer();
+
   /**
    * Generate MCP tool definitions from endpoint schemas.
+   * 1:1 mapping — one tool per endpoint (raw API wrappers).
    *
    * @param endpoints - Extracted endpoint schemas from the Schema Extractor
    * @returns Array of generated tool definitions
    */
   generateTools(endpoints: EndpointSchema[]): GeneratedTool[] {
     return endpoints.map((endpoint) => this.generateTool(endpoint));
+  }
+
+  /**
+   * Generate a composite MCP tool from a workflow definition.
+   * N:1 mapping — multiple endpoints compose into one high-level tool.
+   *
+   * @param definition - Workflow definition with steps and parameterMappings
+   * @param endpoints  - Extracted EndpointSchema[] for the operationIds in this workflow
+   * @returns A single GeneratedTool with a chained handler
+   */
+  generateWorkflowTool(
+    definition: WorkflowDefinition,
+    endpoints: EndpointSchema[],
+  ): GeneratedTool {
+    return this.workflowComposer.compose(definition, endpoints);
   }
 
   /**
@@ -103,6 +123,34 @@ export class ToolGenerator {
    */
   generateZodSchema(endpoint: EndpointSchema): string {
     const fields: string[] = [];
+
+    // Collect all field names that will come from parameters and request body
+    // so we can detect collisions with injected auth field names.
+    const existingNames = new Set<string>();
+    for (const param of endpoint.parameters) {
+      if (!this.isAuthHeader(param.name)) {
+        existingNames.add(param.name);
+      }
+    }
+    if (endpoint.requestBody?.schema.properties) {
+      for (const name of Object.keys(endpoint.requestBody.schema.properties)) {
+        existingNames.add(name);
+      }
+    }
+
+    // For authenticated endpoints, inject authToken and userId as required params.
+    // If the endpoint itself has a field named 'authToken' or 'userId', rename the
+    // injected auth fields with a _rc prefix to avoid Zod duplicate-key errors.
+    if (endpoint.requiresAuth) {
+      const authTokenName = existingNames.has("authToken") ? "_rcAuthToken" : "authToken";
+      const userIdName = existingNames.has("userId") ? "_rcUserId" : "userId";
+      fields.push(
+        `${authTokenName}: z.string().describe("Rocket.Chat Auth Token (X-Auth-Token)")`
+      );
+      fields.push(
+        `${userIdName}: z.string().describe("Rocket.Chat User ID (X-User-Id)")`
+      );
+    }
 
     // Add query/path parameters (skip auth headers)
     for (const param of endpoint.parameters) {
@@ -229,6 +277,19 @@ export class ToolGenerator {
     lines.push("async (params) => {");
     lines.push("      try {");
 
+    // For authenticated endpoints, set auth from tool params before making the request.
+    // Use collision-safe names: _rcAuthToken/_rcUserId if the endpoint has its own userId/authToken.
+    if (endpoint.requiresAuth) {
+      const allParamNames = new Set<string>([
+        ...endpoint.parameters.filter(p => !this.isAuthHeader(p.name)).map(p => p.name),
+        ...Object.keys(endpoint.requestBody?.schema.properties ?? {}),
+      ]);
+      const authTokenParam = allParamNames.has("authToken") ? "_rcAuthToken" : "authToken";
+      const userIdParam = allParamNames.has("userId") ? "_rcUserId" : "userId";
+      lines.push("        // Set per-request auth from tool parameters");
+      lines.push(`        rcClient.setAuth(params.${authTokenParam}, params.${userIdParam});`);
+    }
+
     // Build the API path (with path parameter substitution)
     if (pathParams.length > 0) {
       let pathExpr = `\`${endpoint.path}\``;
@@ -262,13 +323,21 @@ export class ToolGenerator {
     const pathRef = queryParams.length > 0 ? "fullPath" : "apiPath";
 
     if (hasBody) {
-      // Extract body params (all request body properties)
+      // Extract body params (all request body properties), excluding auth params
       const bodyProps = endpoint.requestBody?.schema.properties
         ? Object.keys(endpoint.requestBody.schema.properties)
         : [];
       const queryPropNames = queryParams.map((qp) => qp.name);
+      const allParamNames = new Set<string>([
+        ...queryPropNames,
+        ...endpoint.parameters.filter(p => !this.isAuthHeader(p.name)).map(p => p.name),
+        ...Object.keys(endpoint.requestBody?.schema.properties ?? {}),
+      ]);
+      const authTokenParam = allParamNames.has("authToken") ? "_rcAuthToken" : "authToken";
+      const userIdParam = allParamNames.has("userId") ? "_rcUserId" : "userId";
+      const excludeFromBody = [...queryPropNames, authTokenParam, userIdParam];
       const bodyParamNames = bodyProps.filter(
-        (name) => !queryPropNames.includes(name),
+        (name) => !excludeFromBody.includes(name),
       );
 
       if (bodyParamNames.length > 0) {
@@ -283,8 +352,10 @@ export class ToolGenerator {
           `        const result = await rcClient.${method}(${pathRef}, body);`,
         );
       } else {
+        // Filter out auth params before using remainder as body
+        lines.push(`        const { ${authTokenParam}: _a, ${userIdParam}: _u, ...body } = params;`);
         lines.push(
-          `        const result = await rcClient.${method}(${pathRef}, params);`,
+          `        const result = await rcClient.${method}(${pathRef}, body);`,
         );
       }
     } else {

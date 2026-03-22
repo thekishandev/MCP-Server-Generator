@@ -3,24 +3,6 @@
   "version": "0.2.0",
   "description": "Generate minimal MCP servers for Rocket.Chat with only the APIs you need",
   "contextFileName": "GEMINI.md",
-  "settings": [
-    {
-      "name": "Rocket.Chat Server URL",
-      "description": "URL of your Rocket.Chat instance",
-      "envVar": "RC_URL"
-    },
-    {
-      "name": "Rocket.Chat Username",
-      "description": "Username for authentication",
-      "envVar": "RC_USER"
-    },
-    {
-      "name": "Rocket.Chat Password",
-      "description": "Password for authentication",
-      "envVar": "RC_PASSWORD",
-      "sensitive": true
-    }
-  ],
   "mcpServers": {
     "rcMcpGenerator": {
       "command": "node",

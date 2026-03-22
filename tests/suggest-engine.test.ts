@@ -17,8 +17,7 @@ import { SuggestEngine } from "../src/core/suggest-engine.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
-async function makeOfflineEngine(): Promise<SuggestEngine> {
-  delete process.env.GEMINI_API_KEY;
+async function makeEngine(): Promise<SuggestEngine> {
   const engine = new SuggestEngine();
   await engine.loadEndpoints();
   return engine;
@@ -28,21 +27,21 @@ async function makeOfflineEngine(): Promise<SuggestEngine> {
 
 describe("SuggestEngine._tokenize", () => {
   it("lowercases and splits on whitespace", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const tokens = engine._tokenize("Send A Message");
     expect(tokens).toContain("send");
     expect(tokens).toContain("message");
   });
 
   it("removes stop words", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const tokens = engine._tokenize("send a message to a channel");
     expect(tokens).not.toContain("a");
     expect(tokens).not.toContain("to");
   });
 
   it("replaces non-alphanumeric chars with spaces (except hyphens)", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const tokens = engine._tokenize("/api/v1/chat.postMessage");
     expect(tokens).not.toContain("/api/v1/chat.postmessage");
     expect(tokens).toContain("chat");
@@ -50,7 +49,7 @@ describe("SuggestEngine._tokenize", () => {
   });
 
   it("filters single-character tokens", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const tokens = engine._tokenize("a b c send");
     expect(tokens.every((t) => t.length > 1)).toBe(true);
     expect(tokens).toContain("send");
@@ -61,7 +60,7 @@ describe("SuggestEngine._tokenize", () => {
 
 describe("SuggestEngine._suggestWithKeywords", () => {
   it("returns valid operationIds only", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const results = engine._suggestWithKeywords("send a message to a channel");
     const endpoints = new Set(engine.getEndpoints().map((e) => e.operationId));
     for (const r of results) {
@@ -72,7 +71,7 @@ describe("SuggestEngine._suggestWithKeywords", () => {
   });
 
   it("ranks message endpoints highly for 'send a message'", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const results = engine._suggestWithKeywords("send a message");
     expect(results.length).toBeGreaterThan(0);
     // It should match chat/message related endpoints across clusters
@@ -88,7 +87,7 @@ describe("SuggestEngine._suggestWithKeywords", () => {
   });
 
   it("returns MULTIPLE clusters for cross-domain intents", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const results = engine._suggestWithKeywords(
       "create project channel, invite team members, send task updates and star important messages",
     );
@@ -97,7 +96,7 @@ describe("SuggestEngine._suggestWithKeywords", () => {
   });
 
   it("covers messaging AND channel endpoints for mixed intent", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const results = engine._suggestWithKeywords(
       "create channel, send message, star message",
     );
@@ -109,7 +108,7 @@ describe("SuggestEngine._suggestWithKeywords", () => {
   });
 
   it("assigns confidence high/medium/low correctly", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const results = engine._suggestWithKeywords("send a message to a channel");
     for (const r of results) {
       expect(["high", "medium", "low"]).toContain(r.confidence);
@@ -117,14 +116,14 @@ describe("SuggestEngine._suggestWithKeywords", () => {
   });
 
   it("returns results even when no direct keyword matches", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const results = engine._suggestWithKeywords("xyzzy frobnicate");
     // Falls back to empty list if 0 matches
     expect(results.length).toBeGreaterThanOrEqual(0);
   });
 
   it("finds endpoints via synonym expansion ('invite' matches 'add')", async () => {
-    const engine = await makeOfflineEngine();
+    const engine = await makeEngine();
     const results = engine._suggestWithKeywords("invite members to channel");
     const allEps = results.flatMap((r) => r.endpoints);
     // Should find channels.invite or channels.addAll via synonyms
@@ -137,9 +136,9 @@ describe("SuggestEngine._suggestWithKeywords", () => {
 
 // ─── suggest() — offline path ─────────────────────────────────────────
 
-describe("SuggestEngine.suggest (offline, no API key)", () => {
+describe("SuggestEngine.suggest", () => {
   beforeEach(() => {
-    delete process.env.GEMINI_API_KEY;
+    // engine is always offline — no external API calls
   });
 
   it("returns SuggestionResult objects with required fields", async () => {
@@ -152,7 +151,6 @@ describe("SuggestEngine.suggest (offline, no API key)", () => {
       expect(["high", "medium", "low"]).toContain(r.confidence);
       expect(Array.isArray(r.endpoints)).toBe(true);
       expect(typeof r.endpointCount).toBe("number");
-      expect(r.fromLLM).toBe(false);
     }
   });
 
