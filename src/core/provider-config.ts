@@ -56,7 +56,7 @@ export interface ProviderConfig {
   specSource: SpecSource;
 
   /** Valid API domains for this platform */
-  domains: readonly string[];
+  domainNames: readonly string[];
 
   /** Domain-specific synonym expansion for intelligent discovery */
   synonymMap: Record<string, string[]>;
@@ -65,10 +65,10 @@ export interface ProviderConfig {
   authScheme: AuthScheme;
 
   /** API path prefix to strip when generating tool names */
-  apiPathPrefix: RegExp;
+  apiPrefix: string;
 
   /** Auth header names to filter out of generated schemas */
-  authHeaderNames: string[];
+  authHeaderKeys: string[];
 }
 
 // ─── Rocket.Chat Implementation ──────────────────────────────────────
@@ -113,7 +113,7 @@ export const RocketChatProvider: ProviderConfig = {
     domainToFilename: (domain: string) => `${domain}.yaml`,
   },
 
-  domains: ROCKETCHAT_DOMAINS,
+  domainNames: ROCKETCHAT_DOMAINS,
 
   synonymMap: ROCKETCHAT_SYNONYMS,
 
@@ -127,7 +127,7 @@ export const RocketChatProvider: ProviderConfig = {
     },
   },
 
-  apiPathPrefix: /^\/api\/v[0-9]+\//,
+  apiPrefix: "/api/v1/",
 
-  authHeaderNames: ["x-auth-token", "x-user-id", "x-2fa-code", "authorization"],
+  authHeaderKeys: ["x-auth-token", "x-user-id", "x-2fa-code", "authorization"],
 };

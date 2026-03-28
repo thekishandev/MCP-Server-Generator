@@ -45,6 +45,11 @@ export class WorkflowComposer {
           `Workflow "${definition.name}" references operationId "${step.operationId}" which was not found in the extracted endpoints.`,
         );
       }
+      if (step.fallbackOperationId && !epMap.has(step.fallbackOperationId)) {
+        throw new Error(
+          `Workflow "${definition.name}" references fallbackOperationId "${step.fallbackOperationId}" which was not found in the extracted endpoints.`,
+        );
+      }
     }
 
     const zodSchemaCode = this.generateZodSchema(definition);
@@ -78,13 +83,8 @@ export class WorkflowComposer {
   private generateZodSchema(definition: WorkflowDefinition): string {
     const fields: string[] = [];
 
-    // Auth params (always required for workflow tools)
-    fields.push(
-      'authToken: z.string().describe("Rocket.Chat Auth Token (X-Auth-Token)")',
-    );
-    fields.push(
-      'userId: z.string().describe("Rocket.Chat User ID (X-User-Id)")',
-    );
+    // Auth is handled by rcClient (pre-authenticated from .env at startup).
+    // Only expose user-facing params — no authToken/userId.
 
     // User-facing params from the definition
     for (const param of definition.userParams) {
@@ -130,10 +130,7 @@ export class WorkflowComposer {
     lines.push("async (params) => {");
     lines.push("      try {");
     lines.push(
-      "        // Set auth credentials for all API calls in this workflow",
-    );
-    lines.push(
-      "        rcClient.setAuth(params.authToken, params.userId);",
+      "        // Auth is pre-configured from .env — no per-call credentials needed",
     );
     lines.push("");
     lines.push(
@@ -143,6 +140,12 @@ export class WorkflowComposer {
     lines.push("");
 
     for (let i = 0; i < definition.steps.length; i++) {
+      if (i > 0) {
+        lines.push(`        // Small delay to ensure previous operations are fully processed by the server`);
+        lines.push(`        await new Promise(resolve => setTimeout(resolve, 500));`);
+        lines.push("");
+      }
+
       const step = definition.steps[i];
       const ep = epMap.get(step.operationId)!;
       const method = ep.method.toLowerCase();
@@ -169,30 +172,43 @@ export class WorkflowComposer {
         );
       }
 
-      // Make the API call
-      const hasBody = ["post", "put", "patch"].includes(method);
-      if (hasBody) {
-        lines.push(
-          `        const step${i}Result = await rcClient.${method}("${ep.path}", step${i}Params);`,
-        );
+      // Inject fixed params
+      if (step.fixedParams) {
+        for (const [k, v] of Object.entries(step.fixedParams)) {
+          lines.push(
+            `        step${i}Params["${k}"] = ${JSON.stringify(v)};`
+          );
+        }
+      }
+
+      lines.push(`        let step${i}Result;`);
+
+      const generateCall = (opId: string, indent: string) => {
+        const epRoute = epMap.get(opId)!;
+        const callMethod = epRoute.method.toLowerCase();
+        const hasB = ["post", "put", "patch"].includes(callMethod);
+        const callLines: string[] = [];
+        if (hasB) {
+          callLines.push(`${indent}step${i}Result = await rcClient.${callMethod}("${epRoute.path}", step${i}Params);`);
+        } else {
+          callLines.push(`${indent}{`);
+          callLines.push(`${indent}  const step${i}Query = Object.entries(step${i}Params).filter(([, v]) => v !== undefined).map(([k, v]) => \`\${k}=\${encodeURIComponent(String(v))}\`).join("&");`);
+          callLines.push(`${indent}  const step${i}Path = step${i}Query ? \`${epRoute.path}?\${step${i}Query}\` : "${epRoute.path}";`);
+          callLines.push(`${indent}  step${i}Result = await rcClient.${callMethod}(step${i}Path);`);
+          callLines.push(`${indent}}`);
+        }
+        return callLines;
+      };
+
+      if (step.fallbackOperationId) {
+        lines.push(`        try {`);
+        lines.push(...generateCall(step.operationId, "          "));
+        lines.push(`        } catch (err) {`);
+        lines.push(`          // Fallback to ${step.fallbackOperationId}`);
+        lines.push(...generateCall(step.fallbackOperationId, "          "));
+        lines.push(`        }`);
       } else {
-        // For GET/DELETE, build query string from params
-        lines.push(
-          `        const step${i}Query = Object.entries(step${i}Params)`,
-        );
-        lines.push(
-          `          .filter(([, v]) => v !== undefined)`,
-        );
-        lines.push(
-          `          .map(([k, v]) => \`\${k}=\${encodeURIComponent(String(v))}\`)`,
-        );
-        lines.push(`          .join("&");`);
-        lines.push(
-          `        const step${i}Path = step${i}Query ? \`${ep.path}?\${step${i}Query}\` : "${ep.path}";`,
-        );
-        lines.push(
-          `        const step${i}Result = await rcClient.${method}(step${i}Path);`,
-        );
+        lines.push(...generateCall(step.operationId, "        "));
       }
 
       lines.push(`        stepResults.push(step${i}Result);`);
@@ -243,8 +259,10 @@ export class WorkflowComposer {
   // ─── Helpers ────────────────────────────────────────────────────────
 
   private compressDescription(desc: string): string {
-    const maxLen = 120;
-    if (desc.length <= maxLen) return desc;
-    return desc.substring(0, maxLen - 3) + "...";
+    const maxLen = 200;
+    const baseLen = 140;
+    if (desc.length <= baseLen) return desc;
+    // Truncate at base length to leave room for workflow step info
+    return desc.substring(0, baseLen - 3) + "...";
   }
 }

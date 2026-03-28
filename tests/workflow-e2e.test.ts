@@ -20,8 +20,8 @@ import type { EndpointSchema, ServerConfig } from "../src/core/types.js";
 
 const mockEndpoints: EndpointSchema[] = [
   {
-    operationId: "get-api-v1-channels.info",
-    path: "/api/v1/channels.info",
+    operationId: "get-api-v1-rooms.info",
+    path: "/api/v1/rooms.info",
     method: "get",
     summary: "Get channel info",
     description: "",
@@ -129,7 +129,8 @@ describe("Workflow E2E: send_message_to_channel", () => {
     expect(toolFile!.content).toContain("z.object");
     expect(toolFile!.content).toContain("channelName");
     expect(toolFile!.content).toContain("text");
-    expect(toolFile!.content).toContain("authToken");
+    // Auth params should NOT be in the schema — handled by rcClient from .env
+    expect(toolFile!.content).not.toContain("authToken");
   });
 
   it("generated tool file should contain composite handler with sequential calls", () => {
@@ -141,7 +142,7 @@ describe("Workflow E2E: send_message_to_channel", () => {
 
     expect(toolFile).toBeDefined();
     // Should contain both API paths
-    expect(toolFile!.content).toContain("/api/v1/channels.info");
+    expect(toolFile!.content).toContain("/api/v1/rooms.info");
     expect(toolFile!.content).toContain("/api/v1/chat.postMessage");
     // Should contain step result wiring
     expect(toolFile!.content).toContain("stepResults");

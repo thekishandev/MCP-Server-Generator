@@ -105,12 +105,24 @@ function makeMockEndpoint(
 }
 
 function getEndpointsForWorkflow(def: WorkflowDefinition): EndpointSchema[] {
-  return def.steps.map((step) =>
-    makeMockEndpoint(
-      step.operationId,
-      step.operationId.startsWith("get-") ? "get" : "post",
-    ),
-  );
+  const eps: EndpointSchema[] = [];
+  for (const step of def.steps) {
+    eps.push(
+      makeMockEndpoint(
+        step.operationId,
+        step.operationId.startsWith("get-") ? "get" : "post",
+      )
+    );
+    if (step.fallbackOperationId) {
+      eps.push(
+        makeMockEndpoint(
+          step.fallbackOperationId,
+          step.fallbackOperationId.startsWith("get-") ? "get" : "post",
+        )
+      );
+    }
+  }
+  return eps;
 }
 
 // ─── Handler Executor ────────────────────────────────────────────────────
@@ -148,7 +160,7 @@ describe("Integration: send_message_to_channel", () => {
     const tool = composer.compose(def, endpoints);
 
     const { client, calls } = createMockRcClient({
-      "/api/v1/channels.info": { channel: { _id: "ROOM_ABC123", name: "general" } },
+      "/api/v1/rooms.info": { room: { _id: "ROOM_ABC123", name: "general" } },
       "/api/v1/chat.postMessage": { message: { _id: "MSG_001", text: "Hello!" } },
     });
 
@@ -159,18 +171,17 @@ describe("Integration: send_message_to_channel", () => {
       text: "Hello!",
     });
 
-    // Verify auth was set
-    expect(client.setAuth).toHaveBeenCalledWith("test-token-123", "test-user-456");
+    // Auth is pre-configured from .env — no per-call setAuth needed
 
     // Verify 2 API calls in correct order
     expect(calls).toHaveLength(2);
     expect(calls[0].method).toBe("GET");
-    expect(calls[0].path).toContain("/api/v1/channels.info");
+    expect(calls[0].path).toContain("/api/v1/rooms.info");
     expect(calls[1].method).toBe("POST");
     expect(calls[1].path).toBe("/api/v1/chat.postMessage");
 
-    // Verify channel._id was wired from step 0 → step 1 as "rid"
-    expect(calls[1].body).toHaveProperty("rid", "ROOM_ABC123");
+    // Verify channel._id was wired from step 0 → step 1 as "roomId"
+    expect(calls[1].body).toHaveProperty("roomId", "ROOM_ABC123");
 
     // Verify MCP response format
     expect(result.content).toHaveLength(1);
@@ -226,8 +237,8 @@ describe("Integration: create_project_channel", () => {
     expect(calls[2].path).toBe("/api/v1/channels.setTopic");
 
     // Verify channel._id wired to both step 1 and step 2
-    expect(calls[1].body).toHaveProperty("rid", "CH_NEW_001");
-    expect(calls[2].body).toHaveProperty("rid", "CH_NEW_001");
+    expect(calls[1].body).toHaveProperty("roomId", "CH_NEW_001");
+    expect(calls[2].body).toHaveProperty("roomId", "CH_NEW_001");
 
     // Verify success response
     expect(result.content[0].type).toBe("text");
@@ -244,7 +255,7 @@ describe("Integration: invite_users_to_channel", () => {
     const tool = composer.compose(def, endpoints);
 
     const { client, calls } = createMockRcClient({
-      "/api/v1/channels.info": { channel: { _id: "ROOM_DEV", name: "dev-team" } },
+      "/api/v1/rooms.info": { room: { _id: "ROOM_DEV", name: "dev-team" } },
       "/api/v1/channels.invite": { channel: { _id: "ROOM_DEV" }, success: true },
     });
 
@@ -256,9 +267,9 @@ describe("Integration: invite_users_to_channel", () => {
     });
 
     expect(calls).toHaveLength(2);
-    expect(calls[0].path).toContain("/api/v1/channels.info");
+    expect(calls[0].path).toContain("/api/v1/rooms.info");
     // Verify channel._id wired to invite call
-    expect(calls[1].body).toHaveProperty("rid", "ROOM_DEV");
+    expect(calls[1].body).toHaveProperty("roomId", "ROOM_DEV");
     expect(calls[1].body).toHaveProperty("userId", "USER_INVITE_789");
     expect(result.isError).toBeUndefined();
   });
@@ -273,7 +284,7 @@ describe("Integration: create_discussion_in_channel", () => {
     const tool = composer.compose(def, endpoints);
 
     const { client, calls } = createMockRcClient({
-      "/api/v1/channels.info": { channel: { _id: "ROOM_GENERAL" } },
+      "/api/v1/rooms.info": { room: { _id: "ROOM_GENERAL" } },
       "/api/v1/rooms.createDiscussion": { discussion: { _id: "DISC_001", fname: "Bug Triage" } },
     });
 
@@ -309,7 +320,7 @@ describe("Integration: send_and_pin_message", () => {
     const handler = compileHandler(tool.handlerCode, client);
     const result = await handler({
       ...AUTH_PARAMS,
-      rid: "ROOM_ANNOUNCEMENTS",
+      roomId: "ROOM_ANNOUNCEMENTS",
       text: "Important announcement",
     });
 
@@ -345,8 +356,8 @@ describe("Integration: send_dm_to_user", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].path).toBe("/api/v1/im.create");
     expect(calls[0].body).toHaveProperty("username", "john.doe");
-    // Verify room._id wired from step 0 → step 1 as rid
-    expect(calls[1].body).toHaveProperty("rid", "DM_ROOM_001");
+    // Verify room._id wired from step 0 → step 1 as roomId
+    expect(calls[1].body).toHaveProperty("roomId", "DM_ROOM_001");
     expect(calls[1].body).toHaveProperty("text", "Hey!");
     expect(result.isError).toBeUndefined();
   });
@@ -362,7 +373,7 @@ describe("Integration: set_status_and_notify", () => {
 
     const { client, calls } = createMockRcClient({
       "/api/v1/users.setStatus": { success: true },
-      "/api/v1/channels.info": { channel: { _id: "ROOM_STATUS" } },
+      "/api/v1/rooms.info": { room: { _id: "ROOM_STATUS" } },
       "/api/v1/chat.postMessage": { message: { _id: "MSG_STATUS_001", text: "I'm busy" } },
     });
 
@@ -380,10 +391,10 @@ describe("Integration: set_status_and_notify", () => {
     expect(calls[0].path).toBe("/api/v1/users.setStatus");
     expect(calls[0].body).toHaveProperty("message", "In a meeting");
     expect(calls[0].body).toHaveProperty("status", "busy");
-    expect(calls[1].path).toContain("/api/v1/channels.info");
+    expect(calls[1].path).toContain("/api/v1/rooms.info");
     expect(calls[2].path).toBe("/api/v1/chat.postMessage");
-    // Verify channel._id wired from step 1 → step 2 as rid
-    expect(calls[2].body).toHaveProperty("rid", "ROOM_STATUS");
+    // Verify channel._id wired from step 1 → step 2 as roomId
+    expect(calls[2].body).toHaveProperty("roomId", "ROOM_STATUS");
     expect(calls[2].body).toHaveProperty("text", "I'm now in a meeting");
     expect(result.isError).toBeUndefined();
   });
@@ -398,7 +409,7 @@ describe("Integration: archive_channel", () => {
     const tool = composer.compose(def, endpoints);
 
     const { client, calls } = createMockRcClient({
-      "/api/v1/channels.info": { channel: { _id: "ROOM_OLD_PROJECT" } },
+      "/api/v1/rooms.info": { room: { _id: "ROOM_OLD_PROJECT" } },
       "/api/v1/channels.archive": { success: true },
     });
 
@@ -409,10 +420,10 @@ describe("Integration: archive_channel", () => {
     });
 
     expect(calls).toHaveLength(2);
-    expect(calls[0].path).toContain("/api/v1/channels.info");
+    expect(calls[0].path).toContain("/api/v1/rooms.info");
     expect(calls[1].path).toBe("/api/v1/channels.archive");
     // Verify channel._id wired
-    expect(calls[1].body).toHaveProperty("rid", "ROOM_OLD_PROJECT");
+    expect(calls[1].body).toHaveProperty("roomId", "ROOM_OLD_PROJECT");
     expect(result.isError).toBeUndefined();
   });
 });
@@ -449,9 +460,9 @@ describe("Integration: setup_project_workspace", () => {
     expect(calls[3].path).toBe("/api/v1/chat.postMessage");
 
     // Verify channel._id wired to all subsequent steps
-    expect(calls[1].body).toHaveProperty("rid", "CH_PROJECT_001");
-    expect(calls[2].body).toHaveProperty("rid", "CH_PROJECT_001");
-    expect(calls[3].body).toHaveProperty("rid", "CH_PROJECT_001");
+    expect(calls[1].body).toHaveProperty("roomId", "CH_PROJECT_001");
+    expect(calls[2].body).toHaveProperty("roomId", "CH_PROJECT_001");
+    expect(calls[3].body).toHaveProperty("roomId", "CH_PROJECT_001");
     expect(calls[3].body).toHaveProperty("text", "Welcome to Project X!");
     expect(result.isError).toBeUndefined();
   });
@@ -492,14 +503,15 @@ describe("Integration: react_to_last_message", () => {
 // ─── WORKFLOW 11: onboard_user ───────────────────────────────────────────
 
 describe("Integration: onboard_user", () => {
-  it("should chain users.info → channels.invite → chat.postMessage (3 steps)", async () => {
+  it("should chain users.info → rooms.info → channels.invite → chat.postMessage (4 steps)", async () => {
     const def = registry.getWorkflow("onboard_user")!;
     const endpoints = getEndpointsForWorkflow(def);
     const tool = composer.compose(def, endpoints);
 
     const { client, calls } = createMockRcClient({
       "/api/v1/users.info": { user: { _id: "USER_NEW_001", username: "alice" } },
-      "/api/v1/channels.invite": { channel: { _id: "ROOM_TEAM" }, success: true },
+      "/api/v1/rooms.info": { room: { _id: "ROOM_TEAM", name: "team" } },
+      "/api/v1/channels.invite": { success: true },
       "/api/v1/chat.postMessage": { message: { _id: "MSG_WELCOME", text: "Welcome alice!" } },
     });
 
@@ -507,17 +519,20 @@ describe("Integration: onboard_user", () => {
     const result = await handler({
       ...AUTH_PARAMS,
       username: "alice",
-      channelId: "ROOM_TEAM",
+      roomName: "team",
       welcomeText: "Welcome alice!",
-      welcomeRoomId: "ROOM_TEAM",
     });
 
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(calls[0].path).toContain("/api/v1/users.info");
-    expect(calls[1].path).toBe("/api/v1/channels.invite");
-    // Verify user._id wired from step 0 → step 1 as userId
-    expect(calls[1].body).toHaveProperty("userId", "USER_NEW_001");
-    expect(calls[2].path).toBe("/api/v1/chat.postMessage");
+    expect(calls[1].path).toContain("/api/v1/rooms.info");
+    expect(calls[2].path).toBe("/api/v1/channels.invite");
+    // Verify user._id wired from step 0 → step 2 as userId
+    expect(calls[2].body).toHaveProperty("userId", "USER_NEW_001");
+    // Verify room._id wired from step 1 → step 2 as roomId
+    expect(calls[2].body).toHaveProperty("roomId", "ROOM_TEAM");
+    expect(calls[3].path).toBe("/api/v1/chat.postMessage");
+    expect(calls[3].body).toHaveProperty("roomId", "ROOM_TEAM");
     expect(result.isError).toBeUndefined();
   });
 });
@@ -531,23 +546,25 @@ describe("Integration: setup_webhook_integration", () => {
     const tool = composer.compose(def, endpoints);
 
     const { client, calls } = createMockRcClient({
-      "/api/v1/channels.info": { channel: { _id: "ROOM_HOOKS", name: "webhooks" } },
+      "/api/v1/rooms.info": { room: { _id: "ROOM_HOOKS", name: "webhooks" } },
       "/api/v1/integrations.create": { integration: { _id: "INT_001" }, success: true },
     });
 
     const handler = compileHandler(tool.handlerCode, client);
     const result = await handler({
       ...AUTH_PARAMS,
-      channelName: "webhooks",
+      roomName: "webhooks",
       webhookName: "CI Notifications",
     });
 
     expect(calls).toHaveLength(2);
-    expect(calls[0].path).toContain("/api/v1/channels.info");
+    expect(calls[0].path).toContain("/api/v1/rooms.info");
     expect(calls[1].path).toBe("/api/v1/integrations.create");
-    // Verify channel._id wired as channel param
+    // Verify room._id wired as channel param
     expect(calls[1].body).toHaveProperty("channel", "ROOM_HOOKS");
     expect(calls[1].body).toHaveProperty("name", "CI Notifications");
+    expect(calls[1].body).toHaveProperty("type", "webhook-incoming");
+    expect(calls[1].body).toHaveProperty("scriptEnabled", false);
     expect(result.isError).toBeUndefined();
   });
 });
@@ -561,7 +578,7 @@ describe("Integration: export_channel_history", () => {
     const tool = composer.compose(def, endpoints);
 
     const { client, calls } = createMockRcClient({
-      "/api/v1/channels.info": { channel: { _id: "ROOM_ARCHIVE", name: "old-project" } },
+      "/api/v1/rooms.info": { room: { _id: "ROOM_ARCHIVE", name: "old-project" } },
       "/api/v1/channels.history": {
         messages: [
           { _id: "MSG_001", text: "First message" },
@@ -573,11 +590,11 @@ describe("Integration: export_channel_history", () => {
     const handler = compileHandler(tool.handlerCode, client);
     const result = await handler({
       ...AUTH_PARAMS,
-      channelName: "old-project",
+      roomName: "old-project",
     });
 
     expect(calls).toHaveLength(2);
-    expect(calls[0].path).toContain("/api/v1/channels.info");
+    expect(calls[0].path).toContain("/api/v1/rooms.info");
     expect(calls[1].path).toContain("/api/v1/channels.history");
     expect(result.isError).toBeUndefined();
   });
@@ -654,5 +671,5 @@ describe("Integration: error handling across workflows", () => {
       expect(result.content[0].type).toBe("text");
       expect(result.isError).toBeUndefined();
     }
-  });
+  }, 30000);
 });

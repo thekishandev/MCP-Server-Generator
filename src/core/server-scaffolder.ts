@@ -63,6 +63,12 @@ export class ServerScaffolder {
       files.push(this.generateTestFile(tool));
     }
 
+    // 9. Generate GEMINI.md (agent context for USING the server)
+    files.push(this.generateGeminiMd(tools, config));
+
+    // 10. Generate gemini-extension.json (self-registers as gemini-cli extension)
+    files.push(this.generateGeminiExtensionJson(config));
+
     return files;
   }
 
@@ -91,6 +97,8 @@ export class ServerScaffolder {
       "env.example.hbs",
       "readme.md.hbs",
       "test.ts.hbs",
+      "gemini.md.hbs",
+      "gemini-extension.json.hbs",
     ];
 
     for (const file of templateFiles) {
@@ -165,14 +173,6 @@ export class ServerScaffolder {
     };
   }
 
-  private generateAuthFile(): GeneratedFile {
-    const template = this.templates.get("auth.ts.hbs")!;
-    return {
-      relativePath: "src/auth.ts",
-      content: template({}),
-    };
-  }
-
   private generatePackageJson(config: ServerConfig): GeneratedFile {
     const template = this.templates.get("package.json.hbs")!;
     return {
@@ -238,6 +238,36 @@ export class ServerScaffolder {
     };
   }
 
+  private generateGeminiMd(
+    tools: GeneratedTool[],
+    config: ServerConfig,
+  ): GeneratedFile {
+    const template = this.templates.get("gemini.md.hbs")!;
+    return {
+      relativePath: "GEMINI.md",
+      content: template({
+        serverName: config.name,
+        serverDescription: config.description,
+        tools: tools.map((t) => ({
+          toolName: t.toolName,
+          description: t.description,
+          zodSchemaCode: t.zodSchemaCode,
+        })),
+      }),
+    };
+  }
+
+  private generateGeminiExtensionJson(config: ServerConfig): GeneratedFile {
+    const template = this.templates.get("gemini-extension.json.hbs")!;
+    return {
+      relativePath: "gemini-extension.json",
+      content: template({
+        serverName: config.name,
+        serverDescription: config.description,
+      }),
+    };
+  }
+
   // ─── Inline Template Fallbacks ──────────────────────────────────────
   // Used when Handlebars template files haven't been created yet
 
@@ -246,12 +276,13 @@ export class ServerScaffolder {
       "tool.ts.hbs": INLINE_TOOL_TEMPLATE,
       "server.ts.hbs": INLINE_SERVER_TEMPLATE,
       "rc-client.ts.hbs": INLINE_RC_CLIENT_TEMPLATE,
-      "auth.ts.hbs": INLINE_AUTH_TEMPLATE,
       "package.json.hbs": INLINE_PACKAGE_JSON_TEMPLATE,
       "tsconfig.json.hbs": INLINE_TSCONFIG_TEMPLATE,
       "env.example.hbs": INLINE_ENV_TEMPLATE,
       "readme.md.hbs": INLINE_README_TEMPLATE,
       "test.ts.hbs": INLINE_TEST_TEMPLATE,
+      "gemini.md.hbs": INLINE_GEMINI_MD_TEMPLATE,
+      "gemini-extension.json.hbs": INLINE_GEMINI_EXTENSION_TEMPLATE,
     };
     return templates[name] ?? "// Template not found: {{name}}";
   }
@@ -292,7 +323,7 @@ const INLINE_SERVER_TEMPLATE = `#!/usr/bin/env node
  *
  * Credentials: If RC_AUTH_TOKEN and RC_USER_ID are set in .env, the server
  * is pre-authenticated at startup. Individual tools can still override auth
- * by passing authToken + userId as parameters.
+ * by reading credentials from .env (pre-configured at generation time).
  */
 
 import "dotenv/config";
@@ -479,7 +510,7 @@ const INLINE_PACKAGE_JSON_TEMPLATE = `{
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "dotenv": "^16.4.0",
     "zod": "^3.24.0"
   },
@@ -516,8 +547,8 @@ const INLINE_ENV_TEMPLATE = `# Rocket.Chat Server Configuration
 RC_URL={{rcUrl}}
 
 # Authentication credentials.
-# If set, the server pre-authenticates at startup — individual tools
-# can still override these by passing authToken/userId as parameters.
+# The server auto-authenticates at startup using these credentials.
+# Individual tools do NOT require auth params — it's handled automatically.
 RC_AUTH_TOKEN={{rcAuthToken}}
 RC_USER_ID={{rcUserId}}
 `;
@@ -538,12 +569,12 @@ const INLINE_README_TEMPLATE = `# {{serverName}}
 
 ## Authentication
 
-This server uses **parameter-based auth** — each tool call receives \`authToken\` and \`userId\` as input parameters. No login flow or env var credentials needed.
+This server uses **auto-authentication from environment variables**. The \`.env\` file is pre-configured with your credentials — individual tools do NOT require \`authToken\` or \`userId\` params. Auth is handled automatically at startup.
 
-When used with gemini-cli, the agent will interactively ask for:
-- **Auth Token** — your Rocket.Chat X-Auth-Token
-- **User ID** — your Rocket.Chat X-User-Id
-- Any endpoint-specific params (Room ID, message text, etc.)
+Required env vars:
+- **RC_URL** — your Rocket.Chat server URL
+- **RC_AUTH_TOKEN** — your X-Auth-Token
+- **RC_USER_ID** — your X-User-Id
 
 ## Quick Start
 
@@ -675,4 +706,49 @@ describe("{{toolName}} Zod Schema", () => {
     expect(typeof register_{{toolName}}).toBe("function");
   });
 });
+`;
+
+const INLINE_GEMINI_MD_TEMPLATE = `# {{serverName}} — Rocket.Chat MCP Bot
+
+> **Identity:** You are the **{{serverName}}** bot. You perform Rocket.Chat operations using the tools listed below. You do NOT generate servers — you ARE the server. Execute actions directly when the user asks.
+
+## Available Tools
+
+{{#each tools}}
+### {{toolName}}
+{{description}}
+
+{{/each}}
+
+## How to Use
+
+When the user asks you to perform an action (send a message, invite a user, create a channel, etc.), call the appropriate tool directly. Do not ask the user for authToken or userId — they are pre-configured in the environment.
+
+### Example Prompts
+- "Send a welcome DM to @new_hire"
+- "Invite @alice to #general"
+- "Post an announcement in #engineering"
+
+## Rules
+
+- **NEVER suggest generating a new MCP server** — you ARE the server, use your tools
+- **NEVER call rc_suggest_endpoints, rc_generate_server, rc_list_workflows, or rc_search_endpoints** — those are generator tools, not yours
+- **Use pre-configured credentials** — authToken and userId are available from your environment and baked into .env
+- **Report errors clearly** — if a tool call fails, show the exact error message to the user
+- **Be action-oriented** — when the user says "send a message to #general", just do it. Don't ask for confirmation unless parameters are ambiguous.
+`;
+
+const INLINE_GEMINI_EXTENSION_TEMPLATE = `{
+  "name": "{{serverName}}",
+  "version": "1.0.0",
+  "description": "{{serverDescription}}",
+  "contextFileName": "GEMINI.md",
+  "mcpServers": {
+    "{{serverName}}": {
+      "command": "node",
+      "args": ["\${extensionPath}\${/}dist\${/}server.js"],
+      "cwd": "\${extensionPath}"
+    }
+  }
+}
 `;

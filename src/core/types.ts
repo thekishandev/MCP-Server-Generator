@@ -26,23 +26,8 @@ import { OpenAPIV3 } from "openapi-types";
 /** HTTP methods supported by Rocket.Chat REST API */
 export type HttpMethod = "get" | "post" | "put" | "delete" | "patch";
 
-/** Rocket.Chat API Domains */
-export const VALID_DOMAINS = [
-  "authentication",
-  "messaging",
-  "rooms",
-  "user-management",
-  "omnichannel",
-  "integrations",
-  "settings",
-  "statistics",
-  "notifications",
-  "content-management",
-  "marketplace-apps",
-  "miscellaneous",
-] as const;
-
-export type Domain = (typeof VALID_DOMAINS)[number];
+/** API Domain string */
+export type Domain = string;
 
 /** A single parameter (query, path, or header) from the OpenAPI spec */
 export interface ParameterSchema {
@@ -170,6 +155,10 @@ export interface WorkflowStep {
   operationId: string;
   /** How previous step outputs wire into this step's inputs — REQUIRED for generic composition */
   parameterMappings: ParameterMapping[];
+  /** Optional hardcoded parameters to inject into this step's request body/query */
+  fixedParams?: Record<string, unknown>;
+  /** Optional fallback operationId if this step fails (e.g. channels.invite -> groups.invite) */
+  fallbackOperationId?: string;
   /** Optional human-readable description for debugging */
   description?: string;
 }

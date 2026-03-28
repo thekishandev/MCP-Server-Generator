@@ -15,9 +15,8 @@
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from "fs";
-import { resolve, dirname, join } from "path";
+import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointSchema } from "./types.js";
 
 // ─── Types ────────────────────────────────────────────────────────────

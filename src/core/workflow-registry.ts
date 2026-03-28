@@ -26,14 +26,14 @@ const WORKFLOWS: WorkflowDefinition[] = [
       "Resolve a channel by name and send a message to it. Combines channel lookup + message posting into one operation.",
     steps: [
       {
-        operationId: "get-api-v1-channels.info",
+        operationId: "get-api-v1-rooms.info",
         parameterMappings: [],
         description: "Look up channel by name to get its _id",
       },
       {
         operationId: "post-api-v1-chat.postMessage",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 0, fromField: "room._id", toParam: "roomId" },
         ],
         description: "Send message to the resolved channel",
       },
@@ -72,14 +72,14 @@ const WORKFLOWS: WorkflowDefinition[] = [
       {
         operationId: "post-api-v1-channels.setDescription",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 0, fromField: "channel._id", toParam: "roomId" },
         ],
         description: "Set channel description",
       },
       {
         operationId: "post-api-v1-channels.setTopic",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 0, fromField: "channel._id", toParam: "roomId" },
         ],
         description: "Set channel topic",
       },
@@ -119,14 +119,15 @@ const WORKFLOWS: WorkflowDefinition[] = [
       "Resolve a channel by name and invite a user to it. Combines channel lookup + user invite into one operation.",
     steps: [
       {
-        operationId: "get-api-v1-channels.info",
+        operationId: "get-api-v1-rooms.info",
         parameterMappings: [],
         description: "Look up channel by name",
       },
       {
         operationId: "post-api-v1-channels.invite",
+        fallbackOperationId: "post-api-v1-groups.invite",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 0, fromField: "room._id", toParam: "roomId" },
         ],
         description: "Invite user to the resolved channel",
       },
@@ -158,14 +159,14 @@ const WORKFLOWS: WorkflowDefinition[] = [
       "Resolve a channel by name and create a threaded discussion in it.",
     steps: [
       {
-        operationId: "get-api-v1-channels.info",
+        operationId: "get-api-v1-rooms.info",
         parameterMappings: [],
         description: "Look up channel by name",
       },
       {
         operationId: "post-api-v1-rooms.createDiscussion",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "prid" },
+          { fromStep: 0, fromField: "room._id", toParam: "prid" },
         ],
         description: "Create a discussion in the resolved channel",
       },
@@ -219,12 +220,12 @@ const WORKFLOWS: WorkflowDefinition[] = [
     ],
     userParams: [
       {
-        name: "rid",
+        name: "roomId",
         type: "string",
         required: true,
         description: "Room/channel ID to send message to",
         forStep: 0,
-        asParam: "rid",
+        asParam: "roomId",
       },
       {
         name: "text",
@@ -251,7 +252,7 @@ const WORKFLOWS: WorkflowDefinition[] = [
       {
         operationId: "post-api-v1-chat.postMessage",
         parameterMappings: [
-          { fromStep: 0, fromField: "room._id", toParam: "rid" },
+          { fromStep: 0, fromField: "room._id", toParam: "roomId" },
         ],
         description: "Send message in the DM",
       },
@@ -288,14 +289,14 @@ const WORKFLOWS: WorkflowDefinition[] = [
         description: "Set user status",
       },
       {
-        operationId: "get-api-v1-channels.info",
+        operationId: "get-api-v1-rooms.info",
         parameterMappings: [],
         description: "Resolve notification channel by name",
       },
       {
         operationId: "post-api-v1-chat.postMessage",
         parameterMappings: [
-          { fromStep: 1, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 1, fromField: "room._id", toParam: "roomId" },
         ],
         description: "Post status update message to the channel",
       },
@@ -343,14 +344,15 @@ const WORKFLOWS: WorkflowDefinition[] = [
       "Resolve a channel by name and archive it. Combines lookup + archive into one operation.",
     steps: [
       {
-        operationId: "get-api-v1-channels.info",
+        operationId: "get-api-v1-rooms.info",
         parameterMappings: [],
         description: "Look up channel by name",
       },
       {
         operationId: "post-api-v1-channels.archive",
+        fallbackOperationId: "post-api-v1-groups.archive",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 0, fromField: "room._id", toParam: "roomId" },
         ],
         description: "Archive the channel",
       },
@@ -381,21 +383,21 @@ const WORKFLOWS: WorkflowDefinition[] = [
       {
         operationId: "post-api-v1-channels.setDescription",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 0, fromField: "channel._id", toParam: "roomId" },
         ],
         description: "Set the channel description",
       },
       {
         operationId: "post-api-v1-channels.setTopic",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 0, fromField: "channel._id", toParam: "roomId" },
         ],
         description: "Set the channel topic",
       },
       {
         operationId: "post-api-v1-chat.postMessage",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "rid" },
+          { fromStep: 0, fromField: "channel._id", toParam: "roomId" },
         ],
         description: "Post welcome message in the new channel",
       },
@@ -444,6 +446,7 @@ const WORKFLOWS: WorkflowDefinition[] = [
     steps: [
       {
         operationId: "get-api-v1-channels.history",
+        fallbackOperationId: "get-api-v1-groups.history",
         parameterMappings: [],
         description: "Get the most recent message from the channel",
       },
@@ -483,7 +486,7 @@ const WORKFLOWS: WorkflowDefinition[] = [
   {
     name: "onboard_user",
     description:
-      "Look up a user by username, invite them to a channel, and send a welcome message. Spans user-management + rooms + messaging.",
+      "Look up a user by username, resolve a room by name, invite them to the room, and send a welcome message. Spans user-management + rooms + messaging.",
     steps: [
       {
         operationId: "get-api-v1-users.info",
@@ -491,16 +494,25 @@ const WORKFLOWS: WorkflowDefinition[] = [
         description: "Look up user by username",
       },
       {
+        operationId: "get-api-v1-rooms.info",
+        parameterMappings: [],
+        description: "Resolve the target room by name",
+      },
+      {
         operationId: "post-api-v1-channels.invite",
+        fallbackOperationId: "post-api-v1-groups.invite",
         parameterMappings: [
           { fromStep: 0, fromField: "user._id", toParam: "userId" },
+          { fromStep: 1, fromField: "room._id", toParam: "roomId" },
         ],
-        description: "Invite user to the target channel",
+        description: "Invite user to the resolved room",
       },
       {
         operationId: "post-api-v1-chat.postMessage",
-        parameterMappings: [],
-        description: "Send welcome message to the channel",
+        parameterMappings: [
+          { fromStep: 1, fromField: "room._id", toParam: "roomId" },
+        ],
+        description: "Send welcome message to the room",
       },
     ],
     userParams: [
@@ -513,28 +525,20 @@ const WORKFLOWS: WorkflowDefinition[] = [
         asParam: "username",
       },
       {
-        name: "channelId",
+        name: "roomName",
         type: "string",
         required: true,
-        description: "Channel ID to invite the user to",
+        description: "Name of the room to invite the user to",
         forStep: 1,
-        asParam: "rid",
+        asParam: "roomName",
       },
       {
         name: "welcomeText",
         type: "string",
         required: true,
-        description: "Welcome message to post in the channel",
-        forStep: 2,
+        description: "Welcome message to post in the room",
+        forStep: 3,
         asParam: "text",
-      },
-      {
-        name: "welcomeRoomId",
-        type: "string",
-        required: true,
-        description: "Room ID to post the welcome message in",
-        forStep: 2,
-        asParam: "rid",
       },
     ],
   },
@@ -543,18 +547,24 @@ const WORKFLOWS: WorkflowDefinition[] = [
   {
     name: "setup_webhook_integration",
     description:
-      "Resolve a channel by name and create an incoming webhook integration for it. Spans integrations + rooms.",
+      "Resolve a room by name and create an incoming webhook integration for it. Spans integrations + rooms.",
     steps: [
       {
-        operationId: "get-api-v1-channels.info",
+        operationId: "get-api-v1-rooms.info",
         parameterMappings: [],
-        description: "Look up target channel by name",
+        description: "Look up target room by name",
       },
       {
         operationId: "post-api-v1-integrations-create",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "channel" },
+          { fromStep: 0, fromField: "room._id", toParam: "channel" },
         ],
+        fixedParams: {
+          type: "webhook-incoming",
+          username: "bot",
+          scriptEnabled: false,
+          enabled: true,
+        },
         description: "Create incoming webhook integration",
       },
     ],
@@ -563,7 +573,7 @@ const WORKFLOWS: WorkflowDefinition[] = [
         name: "channelName",
         type: "string",
         required: true,
-        description: "Channel name to set up the webhook for",
+        description: "Room/Channel name to set up the webhook for",
         forStep: 0,
         asParam: "roomName",
       },
@@ -575,14 +585,6 @@ const WORKFLOWS: WorkflowDefinition[] = [
         forStep: 1,
         asParam: "name",
       },
-      {
-        name: "scriptEnabled",
-        type: "boolean",
-        required: false,
-        description: "Enable script processing for the webhook",
-        forStep: 1,
-        asParam: "scriptEnabled",
-      },
     ],
   },
 
@@ -590,17 +592,18 @@ const WORKFLOWS: WorkflowDefinition[] = [
   {
     name: "export_channel_history",
     description:
-      "Resolve a channel by name and fetch its message history. Spans rooms + messaging.",
+      "Resolve a room by name and fetch its message history. Spans rooms + messaging.",
     steps: [
       {
-        operationId: "get-api-v1-channels.info",
+        operationId: "get-api-v1-rooms.info",
         parameterMappings: [],
-        description: "Look up channel by name",
+        description: "Look up room by name",
       },
       {
         operationId: "get-api-v1-channels.history",
+        fallbackOperationId: "get-api-v1-groups.history",
         parameterMappings: [
-          { fromStep: 0, fromField: "channel._id", toParam: "roomId" },
+          { fromStep: 0, fromField: "room._id", toParam: "roomId" },
         ],
         description: "Fetch message history",
       },
@@ -610,7 +613,7 @@ const WORKFLOWS: WorkflowDefinition[] = [
         name: "channelName",
         type: "string",
         required: true,
-        description: "Channel name to export history from",
+        description: "Room/Channel name to export history from",
         forStep: 0,
         asParam: "roomName",
       },

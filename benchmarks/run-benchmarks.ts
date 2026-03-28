@@ -55,9 +55,9 @@ async function main() {
   const composer = new WorkflowComposer();
   const workflows = registry.listWorkflows();
 
-  // 2. Get full-server baseline
+  // 2. Get full-server baseline — use ALL endpoints for an accurate baseline
   const allEndpoints = extractor.getAllEndpoints();
-  const baselineReport = analyzer.analyze(OPENAPI_SPEC_DIR, allEndpoints.slice(0, 5), []);
+  const baselineReport = analyzer.analyze(OPENAPI_SPEC_DIR, allEndpoints, []);
   const fullServerTokens = baselineReport.tokens.fullServerTokens;
   console.log(`  Full server token estimate: ~${fullServerTokens.toLocaleString()}\n`);
 
@@ -65,7 +65,7 @@ async function main() {
   const rows: BenchmarkRow[] = [];
 
   for (const def of workflows) {
-    const opIds = def.steps.map((s) => s.operationId);
+    const opIds = def.steps.flatMap((s) => s.fallbackOperationId ? [s.operationId, s.fallbackOperationId] : [s.operationId]);
 
     try {
       // Extract only the endpoints needed by this workflow

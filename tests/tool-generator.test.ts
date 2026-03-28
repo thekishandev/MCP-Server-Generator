@@ -65,14 +65,14 @@ describe("ToolGenerator", () => {
       expect(tools[0].toolName).toBe("chat_postMessage");
     });
 
-    it("should filter out raw auth headers and inject authToken/userId params", () => {
+    it("should filter out raw auth headers and NOT inject authToken/userId params", () => {
       const tools = generator.generateTools([mockEndpoint]);
       // Raw header params should not appear as named fields
       expect(tools[0].zodSchemaCode).not.toContain('"X-Auth-Token"');
       expect(tools[0].zodSchemaCode).not.toContain('"X-User-Id"');
-      // But injected auth params should be present (since requiresAuth is true)
-      expect(tools[0].zodSchemaCode).toContain('authToken: z.string()');
-      expect(tools[0].zodSchemaCode).toContain('userId: z.string()');
+      // Auth params should NOT be injected — auth is handled by rcClient from .env
+      expect(tools[0].zodSchemaCode).not.toContain('authToken: z.string()');
+      expect(tools[0].zodSchemaCode).not.toContain('userId: z.string()');
     });
 
     it("should include request body params in Zod schema", () => {

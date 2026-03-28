@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { VALID_DOMAINS } from "../src/core/types.js";
+import { RocketChatProvider } from "../src/core/provider-config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SPEC_DIR = resolve(__dirname, "../src/providers/rocketchat/openapi");
@@ -17,6 +18,66 @@ describe("SchemaExtractor", () => {
     extractor = new SchemaExtractor();
     await extractor.loadDomains([...VALID_DOMAINS]);
   });
+
+  // ─── Mock-based tests (always run, no network/cache needed) ─────────
+
+  describe("constructor and ProviderConfig", () => {
+    it("should default to RocketChatProvider when no provider is passed", () => {
+      const ext = new SchemaExtractor();
+      // Access the private provider field to verify default
+      expect((ext as any).provider).toBe(RocketChatProvider);
+    });
+
+    it("should accept a custom ProviderConfig", () => {
+      const customProvider = {
+        ...RocketChatProvider,
+        name: "test-provider",
+        displayName: "Test",
+      };
+      const ext = new SchemaExtractor(customProvider);
+      expect((ext as any).provider.name).toBe("test-provider");
+    });
+
+    it("should start with empty endpoint index", () => {
+      const ext = new SchemaExtractor();
+      expect(ext.getEndpointCount()).toBe(0);
+      expect(ext.getAllEndpoints()).toEqual([]);
+      expect(ext.listEndpoints()).toEqual([]);
+    });
+  });
+
+  describe("extractEndpointsForIds error handling", () => {
+    it("should throw for non-existent operationId on empty index", () => {
+      const ext = new SchemaExtractor();
+      expect(() =>
+        ext.extractEndpointsForIds(["nonexistent-endpoint"]),
+      ).toThrow('Endpoint not found for operationId: "nonexistent-endpoint"');
+    });
+
+    it("should return empty array for empty operationIds list", () => {
+      const ext = new SchemaExtractor();
+      const results = ext.extractEndpointsForIds([]);
+      expect(results).toEqual([]);
+    });
+  });
+
+  describe("inferDomainsFromIds", () => {
+    it("should always include authentication domain", async () => {
+      const ext = new SchemaExtractor();
+      const domains = await ext.inferDomainsFromIds([]);
+      expect(domains).toContain("authentication");
+    });
+
+    it("should handle missing cache files gracefully", async () => {
+      const ext = new SchemaExtractor();
+      const domains = await ext.inferDomainsFromIds(["nonexistent-op-id"]);
+      // Should still return at least authentication
+      expect(domains).toContain("authentication");
+      expect(domains.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ─── Network-dependent tests (skip if no cached specs) ──────────────
 
   describe("loadDomains", () => {
     it.skipIf(!specsExist)(

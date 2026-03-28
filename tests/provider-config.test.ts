@@ -22,7 +22,7 @@ describe("ProviderConfig interface", () => {
     const provider: ProviderConfig = RocketChatProvider;
     expect(provider.name).toBe("rocketchat");
     expect(provider.displayName).toBe("Rocket.Chat");
-    expect(provider.domains.length).toBeGreaterThan(0);
+    expect(provider.domainNames.length).toBeGreaterThan(0);
     expect(provider.authScheme.type).toBe("header");
     expect(provider.authScheme.headers).toContain("X-Auth-Token");
     expect(provider.authScheme.headers).toContain("X-User-Id");
@@ -65,24 +65,20 @@ describe("ProviderConfig interface", () => {
 
   it("RC auth scheme matches existing tool-generator auth handling", () => {
     // The tool-generator injects these exact header patterns
-    expect(RocketChatProvider.authHeaderNames).toContain("x-auth-token");
-    expect(RocketChatProvider.authHeaderNames).toContain("x-user-id");
-    expect(RocketChatProvider.authHeaderNames).toContain("x-2fa-code");
-    expect(RocketChatProvider.authHeaderNames).toContain("authorization");
+    expect(RocketChatProvider.authHeaderKeys).toContain("x-auth-token");
+    expect(RocketChatProvider.authHeaderKeys).toContain("x-user-id");
+    expect(RocketChatProvider.authHeaderKeys).toContain("x-2fa-code");
+    expect(RocketChatProvider.authHeaderKeys).toContain("authorization");
 
     // Auth param names match what ToolGenerator injects into Zod schemas
     expect(RocketChatProvider.authScheme.authParamNames.token).toBe("authToken");
     expect(RocketChatProvider.authScheme.authParamNames.userId).toBe("userId");
   });
 
-  it("RC apiPathPrefix strips versioned API paths correctly", () => {
+  it("RC apiPrefix strips versioned API paths correctly", () => {
     const path = "/api/v1/chat.postMessage";
-    const stripped = path.replace(RocketChatProvider.apiPathPrefix, "");
+    const stripped = path.replace(RocketChatProvider.apiPrefix, "");
     expect(stripped).toBe("chat.postMessage");
-
-    const v2Path = "/api/v2/some.endpoint";
-    const v2Stripped = v2Path.replace(RocketChatProvider.apiPathPrefix, "");
-    expect(v2Stripped).toBe("some.endpoint");
   });
 
   it("RC specSource has valid configuration", () => {

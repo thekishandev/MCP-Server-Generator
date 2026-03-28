@@ -102,5 +102,25 @@ describe("ServerScaffolder", () => {
       const server = files.find((f) => f.relativePath === "src/server.ts");
       expect(server?.content).not.toContain("import { authenticate }");
     });
+
+    it("should generate GEMINI.md for agent context", () => {
+      const files = scaffolder.scaffold([mockTool], mockConfig);
+      const geminiMd = files.find((f) => f.relativePath === "GEMINI.md");
+      expect(geminiMd).toBeDefined();
+      expect(geminiMd?.content).toContain("test-server");
+      expect(geminiMd?.content).toContain("chat_postMessage");
+    });
+
+    it("should generate gemini-extension.json for self-registration", () => {
+      const files = scaffolder.scaffold([mockTool], mockConfig);
+      const extJson = files.find(
+        (f) => f.relativePath === "gemini-extension.json",
+      );
+      expect(extJson).toBeDefined();
+      const parsed = JSON.parse(extJson!.content);
+      expect(parsed.name).toBe("test-server");
+      expect(parsed.contextFileName).toBe("GEMINI.md");
+      expect(parsed.mcpServers).toBeDefined();
+    });
   });
 });

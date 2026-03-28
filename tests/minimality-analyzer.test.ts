@@ -3,7 +3,7 @@ import { MinimalityAnalyzer } from "../src/core/minimality-analyzer.js";
 import { SchemaExtractor } from "../src/core/schema-extractor.js";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { VALID_DOMAINS } from "../src/core/types.js";
+import { ROCKETCHAT_DOMAINS } from "../src/core/provider-config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The tests still mock a fake directory pointing to some cache if needed,
@@ -18,7 +18,7 @@ describe("MinimalityAnalyzer", () => {
   describe("analyze (with loaded endpoints)", () => {
     it("should produce a complete minimality report for send-message operationId", async () => {
       const extractor = new SchemaExtractor();
-      await extractor.loadDomains([...VALID_DOMAINS]);
+      await extractor.loadDomains([...ROCKETCHAT_DOMAINS]);
       const allEndpoints = Array.from(
         (extractor as any).endpointIndex.values() as any[],
       );
@@ -58,7 +58,7 @@ describe("MinimalityAnalyzer", () => {
   describe("formatReport", () => {
     it("should format a report as a readable string", async () => {
       const extractor = new SchemaExtractor();
-      await extractor.loadDomains([...VALID_DOMAINS]);
+      await extractor.loadDomains([...ROCKETCHAT_DOMAINS]);
       const allEndpoints = Array.from(
         (extractor as any).endpointIndex.values() as any[],
       );

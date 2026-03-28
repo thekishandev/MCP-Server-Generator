@@ -161,11 +161,11 @@ describe("WorkflowComposer", () => {
       expect(tool.endpoint).toBeDefined();
     });
 
-    it("Zod schema should expose only user-facing params + auth", () => {
+    it("Zod schema should expose only user-facing params (no auth)", () => {
       const tool = composer.compose(definition, mockEndpoints);
-      // Should have auth params
-      expect(tool.zodSchemaCode).toContain("authToken: z.string()");
-      expect(tool.zodSchemaCode).toContain("userId: z.string()");
+      // Auth params should NOT be in the schema — handled by rcClient from .env
+      expect(tool.zodSchemaCode).not.toContain("authToken: z.string()");
+      expect(tool.zodSchemaCode).not.toContain("userId: z.string()");
       // Should have user params
       expect(tool.zodSchemaCode).toContain("channelName:");
       expect(tool.zodSchemaCode).toContain("text:");
@@ -240,21 +240,41 @@ describe("WorkflowComposer", () => {
 
       for (const def of registry.listWorkflows()) {
         // Create minimal mock endpoints for each workflow's steps
-        const mockEps: EndpointSchema[] = def.steps.map((step) => ({
-          operationId: step.operationId,
-          path: `/api/v1/${step.operationId.replace(/^(get|post|put|delete)-api-v1-/, "")}`,
-          method: step.operationId.startsWith("get-") ? "get" : "post",
-          summary: step.description ?? step.operationId,
-          description: "",
-          parameters: [],
-          responses: {
-            "200": { description: "Success", schema: { type: "object" } },
-          },
-          requiresAuth: true,
-          tags: [],
-          sourceFile: "mock.yaml",
-          domain: "mock" as any,
-        }));
+        const mockEps: EndpointSchema[] = def.steps.flatMap((step) => {
+          const eps: EndpointSchema[] = [{
+            operationId: step.operationId,
+            path: `/api/v1/${step.operationId.replace(/^(get|post|put|delete)-api-v1-/, "")}`,
+            method: step.operationId.startsWith("get-") ? "get" : "post",
+            summary: step.description ?? step.operationId,
+            description: "",
+            parameters: [],
+            responses: {
+              "200": { description: "Success", schema: { type: "object" } },
+            },
+            requiresAuth: true,
+            tags: [],
+            sourceFile: "mock.yaml",
+            domain: "mock" as any,
+          }];
+          if (step.fallbackOperationId) {
+            eps.push({
+              operationId: step.fallbackOperationId,
+              path: `/api/v1/${step.fallbackOperationId.replace(/^(get|post|put|delete)-api-v1-/, "")}`,
+              method: step.fallbackOperationId.startsWith("get-") ? "get" : "post",
+              summary: step.fallbackOperationId,
+              description: "",
+              parameters: [],
+              responses: {
+                "200": { description: "Success", schema: { type: "object" } },
+              },
+              requiresAuth: true,
+              tags: [],
+              sourceFile: "mock.yaml",
+              domain: "mock" as any,
+            });
+          }
+          return eps;
+        });
 
         const tool = composer.compose(def, mockEps);
         expect(tool.toolName).toBe(def.name);

@@ -11,7 +11,8 @@ import {
   MinimalityAnalyzer,
   WorkflowRegistry,
 } from "../core/index.js";
-import { VALID_DOMAINS, type Domain } from "../core/types.js";
+import { type Domain } from "../core/types.js";
+import { ROCKETCHAT_DOMAINS } from "../core/provider-config.js";
 
 const server = new McpServer({
   name: "rc-mcp-generator",
@@ -30,7 +31,7 @@ server.tool(
   "rc_discover_endpoints",
   "Browse Rocket.Chat API endpoints by domain. Returns tag summaries by default. Use `expand` to reveal individual endpoints for specific tags.",
   {
-    domains: z.array(z.enum(VALID_DOMAINS)).describe("RC API domains to query"),
+    domains: z.array(z.enum(ROCKETCHAT_DOMAINS)).describe("RC API domains to query"),
     expand: z
       .array(z.string())
       .optional()
@@ -155,7 +156,7 @@ server.tool(
         'Search terms, e.g., "star message" or "invite user channel"',
       ),
     domains: z
-      .array(z.enum(VALID_DOMAINS))
+      .array(z.enum(ROCKETCHAT_DOMAINS))
       .optional()
       .describe("Limit search to specific domains"),
     limit: z
@@ -208,7 +209,7 @@ server.tool(
       .describe(
         'API operationIds to include (e.g., ["post-api-v1-chat_postMessage"])',
       ),
-    outputDir: z.string().describe("Directory to output the generated server"),
+    outputDir: z.string().optional().describe("Directory to output the generated server. Defaults to examples/<serverName> in the generator workspace."),
     serverName: z.string().optional().describe("Name for the generated server"),
     rcUrl: z.string().optional().describe("Rocket.Chat server URL (e.g., http://localhost:3000). Gets written to .env."),
     rcAuthToken: z.string().optional().describe("Rocket.Chat X-Auth-Token. Gets written to .env so the server is pre-authenticated."),
@@ -273,7 +274,9 @@ server.tool(
       const tools = [...workflowTools, ...rawTools];
 
       const name = serverName ?? "rc-mcp-server";
-      const absOutputDir = resolve(outputDir);
+      const absOutputDir = outputDir
+        ? resolve(outputDir)
+        : resolve(__dirname, "..", "..", "examples", name);
 
       // Auto-fill credentials from env (set during `gemini extensions link`) if not passed explicitly
       const resolvedRcUrl = rcUrl ?? process.env.RC_URL ?? "http://localhost:3000";

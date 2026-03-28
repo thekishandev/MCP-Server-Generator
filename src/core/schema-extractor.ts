@@ -33,7 +33,7 @@ import type {
   JsonSchemaProperty,
   Domain,
 } from "./types.js";
-import { VALID_DOMAINS } from "./types.js";
+
 import type { ProviderConfig } from "./provider-config.js";
 import { RocketChatProvider } from "./provider-config.js";
 
@@ -110,7 +110,7 @@ export class SchemaExtractor {
     const remaining = new Set(operationIds);
     const matched: Set<Domain> = new Set();
 
-    for (const domain of VALID_DOMAINS as readonly Domain[]) {
+    for (const domain of this.provider.domainNames) {
       if (remaining.size === 0) break;
       const cacheFile = join(cacheDir, `${domain}.json`);
       if (!existsSync(cacheFile)) continue;
@@ -223,7 +223,7 @@ export class SchemaExtractor {
           fuzzyMatch = allEndpoints.find(
             (ep) =>
               ep.path === id ||
-              ep.path.endsWith(id.replace(/^\/?api\/v1\/?/, "")),
+              ep.path.endsWith(id.replace(this.provider.apiPrefix, "")),
           );
         }
 
@@ -457,10 +457,7 @@ export class SchemaExtractor {
     const authHeaders = parameters.filter(
       (p) =>
         p.in === "header" &&
-        (p.name.toLowerCase().includes("auth") ||
-          p.name.toLowerCase().includes("token") ||
-          p.name === "X-Auth-Token" ||
-          p.name === "X-User-Id"),
+        this.provider.authHeaderKeys.map(k => k.toLowerCase()).includes(p.name.toLowerCase())
     );
 
     return authHeaders.length > 0;
@@ -472,8 +469,8 @@ export class SchemaExtractor {
   }
 
   private fuzzyFind(path: string): EndpointSchema | undefined {
-    // Try matching without /api/v1/ prefix
-    const withPrefix = path.startsWith("/api/v1/") ? path : `/api/v1/${path}`;
+    const prefix = this.provider.apiPrefix;
+    const withPrefix = path.startsWith(prefix) ? path : `${prefix.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
 
     const match = this.endpointIndex.get(withPrefix);
     if (match) return match;

@@ -40,7 +40,7 @@ export type {
   UserParam,
   WorkflowDefinition,
 } from "./types.js";
-export { VALID_DOMAINS } from "./types.js";
+
 
 export { WorkflowRegistry } from "./workflow-registry.js";
 export { WorkflowComposer } from "./workflow-composer.js";

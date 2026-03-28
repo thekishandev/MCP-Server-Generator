@@ -13,9 +13,15 @@ import type {
   WorkflowDefinition,
 } from "./types.js";
 import { WorkflowComposer } from "./workflow-composer.js";
+import { type ProviderConfig, RocketChatProvider } from "./provider-config.js";
 
 export class ToolGenerator {
   private workflowComposer = new WorkflowComposer();
+  private provider: ProviderConfig;
+
+  constructor(provider?: ProviderConfig) {
+    this.provider = provider ?? RocketChatProvider;
+  }
 
   /**
    * Generate MCP tool definitions from endpoint schemas.
@@ -69,7 +75,7 @@ export class ToolGenerator {
    */
   private endpointToToolName(path: string): string {
     return path
-      .replace(/^\/api\/v[0-9]+\//, "") // Strip API version prefix
+      .replace(this.provider.apiPrefix, "") // Strip API version prefix
       .replace(/\./g, "_") // Replace dots with underscores
       .replace(/\//g, "_") // Replace slashes with underscores
       .replace(/[^a-zA-Z0-9_]/g, "") // Remove invalid characters
@@ -78,8 +84,13 @@ export class ToolGenerator {
 
   // ─── Description Building (with compression) ─────────────────────────
 
-  /** Maximum description length in characters to prevent context bloat shifting */
-  private static readonly MAX_DESC_LENGTH = 120;
+  /**
+   * Maximum description length. Balances two competing concerns:
+   * - Too short → LLM can't distinguish similar tools → hallucination
+   * - Too long  → context bloat shifts from tool count to description verbosity
+   * Mentor feedback: "Don't compromise on descriptions — hallucination > tokens"
+   */
+  private static readonly MAX_DESC_LENGTH = 200;
 
   /**
    * Build a concise, compressed tool description.
@@ -107,12 +118,30 @@ export class ToolGenerator {
       .replace(/\s+/g, " ")
       .trim();
 
-    // Truncate to max length
-    if (desc.length > ToolGenerator.MAX_DESC_LENGTH) {
-      desc = desc.substring(0, ToolGenerator.MAX_DESC_LENGTH - 3) + "...";
+    // Extract required parameters
+    const requiredParams = [];
+    if (endpoint.parameters) {
+      requiredParams.push(...endpoint.parameters.filter(p => p.required && !this.isAuthHeader(p.name)).map(p => p.name));
+    }
+    if (endpoint.requestBody?.schema && "required" in endpoint.requestBody.schema) {
+      const req = endpoint.requestBody.schema.required;
+      if (Array.isArray(req)) requiredParams.push(...req);
+    }
+    const reqStr = requiredParams.length > 0 ? ` Requires: ${requiredParams.join(", ")}.` : "";
+
+    // Enrich short descriptions (e.g., "React to Message") to prevent hallucination
+    if (desc.length < 30) {
+      const pathName = endpoint.path.replace(this.provider.apiPrefix, "");
+      desc = `${desc}. ${endpoint.method.toUpperCase()} ${pathName} API wrapper.`;
     }
 
-    return desc;
+    // Truncate to max base length
+    const maxBaseDesc = 140;
+    if (desc.length > maxBaseDesc) {
+      desc = desc.substring(0, maxBaseDesc - 3) + "...";
+    }
+
+    return desc + reqStr;
   }
 
   // ─── Zod Schema Generation ──────────────────────────────────────────
@@ -124,33 +153,8 @@ export class ToolGenerator {
   generateZodSchema(endpoint: EndpointSchema): string {
     const fields: string[] = [];
 
-    // Collect all field names that will come from parameters and request body
-    // so we can detect collisions with injected auth field names.
-    const existingNames = new Set<string>();
-    for (const param of endpoint.parameters) {
-      if (!this.isAuthHeader(param.name)) {
-        existingNames.add(param.name);
-      }
-    }
-    if (endpoint.requestBody?.schema.properties) {
-      for (const name of Object.keys(endpoint.requestBody.schema.properties)) {
-        existingNames.add(name);
-      }
-    }
-
-    // For authenticated endpoints, inject authToken and userId as required params.
-    // If the endpoint itself has a field named 'authToken' or 'userId', rename the
-    // injected auth fields with a _rc prefix to avoid Zod duplicate-key errors.
-    if (endpoint.requiresAuth) {
-      const authTokenName = existingNames.has("authToken") ? "_rcAuthToken" : "authToken";
-      const userIdName = existingNames.has("userId") ? "_rcUserId" : "userId";
-      fields.push(
-        `${authTokenName}: z.string().describe("Rocket.Chat Auth Token (X-Auth-Token)")`
-      );
-      fields.push(
-        `${userIdName}: z.string().describe("Rocket.Chat User ID (X-User-Id)")`
-      );
-    }
+    // Auth is handled by rcClient (pre-authenticated from .env at startup).
+    // Only expose API-specific params — no authToken/userId.
 
     // Add query/path parameters (skip auth headers)
     for (const param of endpoint.parameters) {
@@ -276,19 +280,7 @@ export class ToolGenerator {
     const lines: string[] = [];
     lines.push("async (params) => {");
     lines.push("      try {");
-
-    // For authenticated endpoints, set auth from tool params before making the request.
-    // Use collision-safe names: _rcAuthToken/_rcUserId if the endpoint has its own userId/authToken.
-    if (endpoint.requiresAuth) {
-      const allParamNames = new Set<string>([
-        ...endpoint.parameters.filter(p => !this.isAuthHeader(p.name)).map(p => p.name),
-        ...Object.keys(endpoint.requestBody?.schema.properties ?? {}),
-      ]);
-      const authTokenParam = allParamNames.has("authToken") ? "_rcAuthToken" : "authToken";
-      const userIdParam = allParamNames.has("userId") ? "_rcUserId" : "userId";
-      lines.push("        // Set per-request auth from tool parameters");
-      lines.push(`        rcClient.setAuth(params.${authTokenParam}, params.${userIdParam});`);
-    }
+    lines.push("        // Auth is pre-configured from .env — no per-call credentials needed");
 
     // Build the API path (with path parameter substitution)
     if (pathParams.length > 0) {
@@ -323,21 +315,13 @@ export class ToolGenerator {
     const pathRef = queryParams.length > 0 ? "fullPath" : "apiPath";
 
     if (hasBody) {
-      // Extract body params (all request body properties), excluding auth params
+      // Extract body params (all request body properties), excluding query params
       const bodyProps = endpoint.requestBody?.schema.properties
         ? Object.keys(endpoint.requestBody.schema.properties)
         : [];
       const queryPropNames = queryParams.map((qp) => qp.name);
-      const allParamNames = new Set<string>([
-        ...queryPropNames,
-        ...endpoint.parameters.filter(p => !this.isAuthHeader(p.name)).map(p => p.name),
-        ...Object.keys(endpoint.requestBody?.schema.properties ?? {}),
-      ]);
-      const authTokenParam = allParamNames.has("authToken") ? "_rcAuthToken" : "authToken";
-      const userIdParam = allParamNames.has("userId") ? "_rcUserId" : "userId";
-      const excludeFromBody = [...queryPropNames, authTokenParam, userIdParam];
       const bodyParamNames = bodyProps.filter(
-        (name) => !excludeFromBody.includes(name),
+        (name) => !queryPropNames.includes(name),
       );
 
       if (bodyParamNames.length > 0) {
@@ -352,11 +336,8 @@ export class ToolGenerator {
           `        const result = await rcClient.${method}(${pathRef}, body);`,
         );
       } else {
-        // Filter out auth params before using remainder as body
-        lines.push(`        const { ${authTokenParam}: _a, ${userIdParam}: _u, ...body } = params;`);
-        lines.push(
-          `        const result = await rcClient.${method}(${pathRef}, body);`,
-        );
+        // No named body fields — pass all params as body
+        lines.push(`        const result = await rcClient.${method}(${pathRef}, params);`);
       }
     } else {
       lines.push(
@@ -368,12 +349,14 @@ export class ToolGenerator {
       '        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };',
     );
     lines.push("      } catch (error) {");
-    lines.push(
-      '        const message = error instanceof Error ? error.message : "Unknown error";',
-    );
-    lines.push(
-      '        return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };',
-    );
+    lines.push('        let message = error instanceof Error ? error.message : String(error);');
+    lines.push('        if (message.includes("RC API Error")) {');
+    lines.push('          const match = message.match(/RC API Error \\[(\\d+)\\] .*?: (.*)/);');
+    lines.push('          if (match) {');
+    lines.push('            message = `HTTP ${match[1]}: ${match[2]}`;');
+    lines.push('          }');
+    lines.push('        }');
+    lines.push('        return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };');
     lines.push("      }");
     lines.push("    }");
 
@@ -383,13 +366,9 @@ export class ToolGenerator {
   // ─── Helpers ─────────────────────────────────────────────────────────
 
   private isAuthHeader(name: string): boolean {
-    const authHeaders = [
-      "x-auth-token",
-      "x-user-id",
-      "x-2fa-code",
-      "authorization",
-    ];
-    return authHeaders.includes(name.toLowerCase());
+    return this.provider.authHeaderKeys
+      .map((k) => k.toLowerCase())
+      .includes(name.toLowerCase());
   }
 
   private sanitizeFieldName(name: string): string {

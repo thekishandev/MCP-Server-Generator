@@ -20,8 +20,7 @@ import {
   ServerScaffolder,
   GeminiCLIIntegration,
 } from "../core/index.js";
-import { VALID_DOMAINS, type Domain } from "../core/types.js";
-import type { ServerConfig } from "../core/types.js";
+import type { Domain, ServerConfig } from "../core/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -140,7 +139,7 @@ program
       );
 
       // Step 4: Scaffold the server project
-      const serverName = options.name ?? `rc-mcp-custom-server`;
+      const serverName = options.name ?? `custom-server`;
 
       const outputDir = resolve(options.output ?? `./${serverName}`);
 

@@ -17,7 +17,8 @@ import { readFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { SchemaExtractor } from "./schema-extractor.js";
-import { VALID_DOMAINS, type EndpointSchema, type Domain } from "./types.js";
+import { type EndpointSchema, type Domain } from "./types.js";
+import { type ProviderConfig, RocketChatProvider } from "./provider-config.js";
 import { expandWithSynonyms, inferDomains, SYNONYM_MAP, DOMAIN_HINTS } from "./synonym-map.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -51,16 +52,19 @@ interface ScoredSuggestion {
 
 export class SuggestEngine {
   private endpoints: EndpointSchema[] = [];
+  private provider: ProviderConfig;
 
-  constructor() {}
+  constructor(provider?: ProviderConfig) {
+    this.provider = provider ?? RocketChatProvider;
+  }
 
   /**
    * Load all endpoints from the OpenAPI specs using SchemaExtractor
    */
   async loadEndpoints() {
     if (this.endpoints.length > 0) return;
-    const extractor = new SchemaExtractor();
-    await extractor.loadDomains([...VALID_DOMAINS]);
+    const extractor = new SchemaExtractor(this.provider);
+    await extractor.loadDomains([...this.provider.domainNames] as Domain[]);
     const allEndpoints = extractor.getAllEndpoints();
     // Filter out login, as it's automatically added later
     this.endpoints = allEndpoints.filter(
