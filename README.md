@@ -69,47 +69,59 @@ flowchart TB
     end
 
     subgraph AGENT["Gemini CLI Agent"]
-        O["Orchestrator\nsrc/extension/server.ts"]
+        O["Orchestrator · src/extension/server.ts"]
     end
 
     subgraph L1["Layer 1: AI Discovery (4 tools)"]
-        S["rc_suggest_endpoints\nSuggestEngine → TF-IDF + SynonymMap"]
-        SE["rc_search_endpoints\nSuggestEngine → text search + synonyms"]
-        D["rc_discover_endpoints\nSchemaExtractor → tag-based browsing"]
-        W["rc_list_workflows\nWorkflowRegistry → 13 compositions"]
+        S["rc_suggest_endpoints · TF-IDF + SynonymMap"]
+        SE["rc_search_endpoints · text search + synonyms"]
+        D["rc_discover_endpoints · tag-based browsing"]
+        W["rc_list_workflows · 13 compositions"]
     end
 
-    subgraph L2["Layer 2: Deterministic Generation (3 tools)"]
+    subgraph L2["Layer 2: Deterministic Generation (1 tool)"]
         G["rc_generate_server"]
         subgraph PIPE["Generation Pipeline (zero LLM)"]
-            P1["1. WorkflowRegistry\nResolve workflow names → operationIds"]
-            P2["2. SchemaExtractor\nLazy domain load → $ref pruning → EndpointSchema[]"]
-            P3["3. ToolGenerator + WorkflowComposer\nZod schemas + handlers + auth filtering"]
-            P4["4. ServerScaffolder\nHandlebars → complete Node.js project"]
+            P1["1. Workflow Registry · Resolve workflows → operationIds"]
+            P2["2. Schema Extractor · Lazy domain load → $ref pruning"]
+            P3["3. Tool Generator + WorkflowComposer · Zod schemas + handlers"]
+            P4["4. Server Scaffolder · Handlebars → Node.js project + Tests"]
         end
         subgraph POST["Auto Post-Generation"]
             P5["npm install + build"]
             P6["~/.gemini/settings.json registration"]
             P7["Structural validation + tsc --noEmit"]
-            P8["MinimalityAnalyzer\nToken reduction proof"]
+            P8["Minimality Analyzer · Token reduction proof"]
         end
-        V["rc_validate_server\nStandalone structural + type check"]
-        A["rc_analyze_minimality\nStandalone token analysis"]
     end
-
+    
+    subgraph EVAL["Offline Evaluation / CI"]
+        B1["run-benchmarks.ts"]
+        B2["BENCHMARKS.md (99.5% average reduction proof)"]
+    end
+    
     subgraph OUT["Output"]
-        SRV["Production MCP Server\nPre-authenticated, minimal"]
+        M["Production MCP Server"]
     end
-
-    I --> O
-    O --> S & SE & D & W
-
-    S & SE & D & W --> G
-
-    G --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> SRV
-
-    O --> V
-    O --> A
+    
+    subgraph L3["Layer 3: Agent Diagnostics (2 tools)"]
+        V["rc_validate_server"]
+        A["rc_analyze_minimality"]
+    end
+    
+    %% Flow logic
+    I --> O --> S & SE & D & W
+    S & SE & D & W -- "Selected IDs / Workflows" --> G
+    
+    G --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> M
+    M -.-> V
+    M -.-> A
+    
+    %% Benchmarks linking to the specific classes they test
+    P1 -. "Tests all workflows" .-> B1
+    P2 -. "Extracts schemas" .-> B1
+    P8 -. "Calculates tokens" .-> B1
+    B1 --> B2
 ```
 
 **Why two layers?** AI is useful for figuring out *which* endpoints to include. It has no place in the code generation itself. Mixing LLM inference into scaffolding introduces non-determinism, token cost, and hallucination risk — exactly the problems we're solving.
